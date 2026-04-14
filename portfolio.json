@@ -1,0 +1,8 @@
+{
+  "holdings": {
+    "bitcoin": 0.5,
+    "ripple": 5000,
+    "ethereum": 2.0,
+    "ripple-usd": 1000
+  }
+}
