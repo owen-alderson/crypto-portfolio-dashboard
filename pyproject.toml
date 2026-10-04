@@ -29,4 +29,4 @@ dependencies = [
 crypto-terminal = "crypto_terminal.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/owen-alderson/crypto-portfolio-dashboard"
+Homepage = "https://github.com/owen-alderson/crypto-terminal"

@@ -2,7 +2,7 @@
 
 A free, Bloomberg-style crypto terminal that runs in your shell. Live spot prices stream straight from the Coinbase Exchange public websocket: no API key, no account, no polling. Candlestick charts with a live last bar, indicators, price alerts, and search across every Coinbase pair.
 
-![Crypto terminal screenshot](https://raw.githubusercontent.com/owen-alderson/crypto-portfolio-dashboard/main/docs/screenshot.svg)
+![Crypto terminal screenshot](https://raw.githubusercontent.com/owen-alderson/crypto-terminal/main/docs/screenshot.svg)
 
 ![Textual](https://img.shields.io/badge/built%20with-Textual-ffb000) ![Coinbase](https://img.shields.io/badge/data-Coinbase%20Exchange-0052FF)
 
@@ -68,8 +68,8 @@ Alerts fire once and are then removed. The watchlist, indicators and alerts are 
 ## From source
 
 ```bash
-git clone https://github.com/owen-alderson/crypto-portfolio-dashboard.git
-cd crypto-portfolio-dashboard
+git clone https://github.com/owen-alderson/crypto-terminal.git
+cd crypto-terminal
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
