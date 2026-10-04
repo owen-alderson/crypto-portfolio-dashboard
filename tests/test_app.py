@@ -31,6 +31,7 @@ def offline(tmp_path, monkeypatch):
     FakeFeed.instances = []
     path = tmp_path / "watchlist.json"
     monkeypatch.setattr(app_module, "WATCHLIST_FILE", path)
+    monkeypatch.setattr(app_module, "CONFIG_FILE", tmp_path / "config.json")
     monkeypatch.setattr(app_module, "Feed", FakeFeed)
 
     async def fake_exists(client, symbol):
@@ -148,3 +149,27 @@ async def test_live_tick_moves_last_candle_of_selected_pair_only(offline):
         assert chart.candles[-1].c == 120.0 and chart.candles[-1].h == 120.0 and len(chart.candles) == 10
         await pilot.pause(0.6)  # redraw timer picks it up
         assert not chart._dirty
+
+
+async def test_indicators_toggle_persist_and_draw_on_short_history(offline):
+    app = TerminalApp()
+    async with app.run_test(size=(150, 40)) as pilot:
+        await pilot.pause(0.3)
+        chart = app.query_one(ChartPane)
+        await type_command(pilot, "ind sma20 ema50 vwap rsi")  # only 10 candles: fewer than 20/50
+        assert chart.indicators == {"sma20", "ema50", "vwap", "rsi"}
+        await pilot.pause(0.6)
+        assert not chart._dirty  # redraw ran without raising
+        await type_command(pilot, "ind ema50 rsi")  # toggles off
+        assert chart.indicators == {"sma20", "vwap"}
+        await type_command(pilot, "ind macd")
+        assert "usage: ind" in " ".join(n.message for n in app._notifications)
+        assert chart.indicators == {"sma20", "vwap"}
+    assert json.loads((offline.parent / "config.json").read_text()) == {"indicators": ["sma20", "vwap"]}
+
+    app = TerminalApp()  # restart: choice comes back from disk
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.query_one(ChartPane).indicators == {"sma20", "vwap"}
+        await type_command(pilot, "ind off")
+        assert app.query_one(ChartPane).indicators == set()

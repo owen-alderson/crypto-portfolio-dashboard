@@ -13,16 +13,22 @@ from textual.widgets import Input, Static
 
 from .feed import Feed, Tick
 from .history import GRANULARITIES, fetch_candles, product_exists
-from .widgets import ChartPane, PriceTable
+from .widgets import INDICATORS, ChartPane, PriceTable
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "crypto-terminal"
 WATCHLIST_FILE = CONFIG_DIR / "watchlist.json"
+CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_WATCHLIST = ["BTC-USD", "ETH-USD", "XRP-USD", "SOL-USD", "ADA-USD"]
 SYMBOL_RE = re.compile(r"[A-Z0-9]{1,10}-[A-Z0-9]{2,10}")
 STALE_AFTER = 10  # seconds without any feed frame before the status line shows STALE
 
 
-# ── Watchlist + commands ──────────────────────────────────────────────────────
+# ── Watchlist, config + commands ──────────────────────────────────────────────
+
+def write_json(path: Path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2))
+
 
 def load_watchlist() -> list[str]:
     try:
@@ -37,12 +43,27 @@ def load_watchlist() -> list[str]:
 
 
 def save_watchlist(symbols: list[str]):
-    WATCHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
-    WATCHLIST_FILE.write_text(json.dumps({"symbols": symbols}, indent=2))
+    write_json(WATCHLIST_FILE, {"symbols": symbols})
 
 
-def parse_command(text: str) -> tuple[str, str | None]:
-    """`add SOL-USD` -> ("add", "SOL-USD"), `quit` -> ("quit", None). Raises ValueError with a user-facing message."""
+def load_indicators() -> list[str]:
+    try:
+        data = json.loads(CONFIG_FILE.read_text())
+    except (OSError, ValueError):
+        return []
+    names = data.get("indicators") if isinstance(data, dict) else None
+    return [n for n in INDICATORS if isinstance(names, list) and n in names]
+
+
+def save_indicators(names):
+    write_json(CONFIG_FILE, {"indicators": [n for n in INDICATORS if n in names]})
+
+
+def parse_command(text: str) -> tuple[str, str | list[str] | None]:
+    """`add SOL-USD` -> ("add", "SOL-USD"), `ind rsi` -> ("ind", ["rsi"]), `quit` -> ("quit", None).
+
+    Raises ValueError with a user-facing message.
+    """
     parts = text.split()
     if not parts:
         raise ValueError("empty command")
@@ -56,7 +77,14 @@ def parse_command(text: str) -> tuple[str, str | None]:
         if not SYMBOL_RE.fullmatch(symbol):
             raise ValueError(f"not a pair: {args[0]} (expected e.g. SOL-USD)")
         return cmd, symbol
-    raise ValueError(f"unknown command: {text.strip()} (try add / rm / quit)")
+    if cmd == "ind":
+        names = [a.lower() for a in args]
+        if names == ["off"]:
+            return "ind", []
+        if not names or any(n not in INDICATORS for n in names):
+            raise ValueError(f"usage: ind {' '.join(INDICATORS)} (toggles) or ind off")
+        return "ind", names
+    raise ValueError(f"unknown command: {text.strip()} (try add / rm / ind / quit)")
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -85,7 +113,8 @@ class TerminalApp(App):
         with Horizontal(id="main"):
             yield PriceTable(id="watchlist")
             yield ChartPane(id="chart")
-        yield Input(placeholder="add SOL-USD · rm ADA-USD · quit   (esc to close)", id="cmd")
+        yield Input(placeholder="add SOL-USD · rm ADA-USD · ind sma20 ema50 vwap rsi · ind off · quit   (esc to close)",
+                    id="cmd")
         yield Static(id="status", markup=False)  # status carries server text: never parse it as markup
 
     def on_mount(self):
@@ -99,6 +128,7 @@ class TerminalApp(App):
         table = self.query_one(PriceTable)
         table.set_symbols(self.symbols)
         table.focus()
+        self.query_one(ChartPane).set_indicators(load_indicators())
         self.restart_feed()
         self.set_interval(1, self.refresh_status)
         self.refresh_status()
@@ -182,18 +212,22 @@ class TerminalApp(App):
         text = event.value
         self.action_close_command()
         try:
-            cmd, symbol = parse_command(text)
+            cmd, arg = parse_command(text)
         except ValueError as e:
             self.notify(str(e), severity="error")
             return
         if cmd == "quit":
             self.exit()
         elif cmd == "add":
-            self.add_symbol(symbol)
-        elif symbol not in self.symbols:
-            self.notify(f"{symbol} is not on the watchlist", severity="error")
+            self.add_symbol(arg)
+        elif cmd == "ind":
+            chart = self.query_one(ChartPane)
+            chart.set_indicators(chart.indicators ^ set(arg) if arg else ())  # toggle
+            save_indicators(chart.indicators)
+        elif arg not in self.symbols:
+            self.notify(f"{arg} is not on the watchlist", severity="error")
         else:
-            self.symbols.remove(symbol)
+            self.symbols.remove(arg)
             self.watchlist_changed()
 
     @work(group="commands")
