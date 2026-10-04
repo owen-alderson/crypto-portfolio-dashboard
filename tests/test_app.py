@@ -17,6 +17,9 @@ PRODUCTS = [Product(f"{base}-{quote}", base, quote, name) for base, name in
              ("DOGE", "Dogecoin")) for quote in ("BTC", "EUR", "USD") if base != quote]
 
 
+DESKTOP = []  # desktop notifications sent
+
+
 class FakeFeed:
     instances = []
 
@@ -36,6 +39,9 @@ def offline(tmp_path, monkeypatch):
     path = tmp_path / "watchlist.json"
     monkeypatch.setattr(app_module, "WATCHLIST_FILE", path)
     monkeypatch.setattr(app_module, "CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setattr(app_module, "ALERTS_FILE", tmp_path / "alerts.json")
+    monkeypatch.setattr(app_module, "desktop_notify", lambda title, message: DESKTOP.append(message))
+    DESKTOP.clear()
     monkeypatch.setattr(app_module, "Feed", FakeFeed)
 
     async def fake_exists(client, symbol):  # only used when the product list failed to load
@@ -216,3 +222,51 @@ async def test_add_falls_back_to_rest_lookup_without_product_list(offline, monke
         assert app.symbols[-1] == "DOGE-USD"
         await type_command(pilot, "add solana")
         assert any(n.message.startswith("coin search unavailable") for n in app._notifications)
+
+
+async def test_alert_fires_once_with_bell_toast_and_desktop_notification(offline, monkeypatch):
+    app = TerminalApp()
+    async with app.run_test(size=(150, 40)) as pilot:
+        await pilot.pause()
+        bells = []
+        monkeypatch.setattr(app, "bell", lambda: bells.append(1))
+        table, feed = app.query_one(PriceTable), FakeFeed.instances[-1]
+        await type_command(pilot, "alert BTC-USD > 100")
+        await type_command(pilot, "alert ETH-USD move 5%")  # no ETH price yet
+        assert "no price for ETH-USD yet: try again in a moment" in [n.message for n in app._notifications]
+        await type_command(pilot, "alert DOGE-USD < 1")  # not on the watchlist
+        assert app.alerts == [app_module.Alert("BTC-USD", ">", 100)]
+        assert table.get_cell("BTC-USD", "sym").plain == "BTC-USD 🔔"
+
+        feed.on_tick(Tick("BTC-USD", 99.0, 90.0))
+        assert app.alerts and not bells
+        feed.on_tick(Tick("BTC-USD", 100.5, 90.0))
+        feed.on_tick(Tick("BTC-USD", 101.0, 90.0))
+        assert app.alerts == [] and bells == [1] and len(DESKTOP) == 1
+        assert DESKTOP[0] == "BTC-USD > 100.00 · now 100.50"
+        await pilot.pause()
+        assert any(n.severity == "error" and n.message == DESKTOP[0] for n in app._notifications)
+        assert table.get_cell("BTC-USD", "sym").plain == "BTC-USD"
+        assert json.loads((offline.parent / "alerts.json").read_text()) == []
+
+
+async def test_alerts_list_unalert_and_persist(offline):
+    app = TerminalApp()
+    async with app.run_test(size=(150, 40)) as pilot:
+        await pilot.pause()
+        FakeFeed.instances[-1].on_tick(Tick("ETH-USD", 2000.0, 1900.0))
+        for text in ("alert BTC-USD > 90000", "alert ETH-USD move 5%", "alert BTC-USD < 80000"):
+            await type_command(pilot, text)
+        await type_command(pilot, "alerts")
+        assert ("1. BTC-USD > 90,000.00\n2. ETH-USD moves ±5% from 2,000.00\n3. BTC-USD < 80,000.00"
+                in [n.message for n in app._notifications])
+        await type_command(pilot, "unalert 1")
+        await type_command(pilot, "unalert 9")
+        assert "no alert 9 (see `alerts`)" in [n.message for n in app._notifications]
+    assert app.alerts == [app_module.Alert("ETH-USD", "move", 5, 2000.0), app_module.Alert("BTC-USD", "<", 80000)]
+
+    app2 = TerminalApp()  # restart: alerts come back from disk, markers too
+    async with app2.run_test(size=(150, 40)) as pilot:
+        await pilot.pause()
+        assert app2.alerts == app.alerts
+        assert app2.query_one(PriceTable).get_cell("ETH-USD", "sym").plain == "ETH-USD 🔔"

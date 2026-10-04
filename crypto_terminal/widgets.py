@@ -57,7 +57,7 @@ class PriceTable(DataTable):
 
     def on_mount(self):
         self.cursor_type = "row"
-        for label, key, width in (("PAIR", "sym", 10), ("LAST", "last", 12), ("24H %", "chg", 10),
+        for label, key, width in (("PAIR", "sym", 13), ("LAST", "last", 12), ("24H %", "chg", 10),
                                   ("TICKS", "spark", SPARK_LEN)):
             self.add_column(label, key=key, width=width)
         self._last: dict[str, Tick] = {}
@@ -75,6 +75,14 @@ class PriceTable(DataTable):
             if sym not in self._spark:
                 self._spark[sym] = deque(maxlen=SPARK_LEN)
                 self.add_row(Text(sym, style="bold"), "—", "—", "", key=sym)
+
+    def set_alerts(self, symbols: set[str]):
+        """Mark pairs that have an alert set."""
+        for sym in self._spark:
+            self.update_cell(sym, "sym", Text(f"{sym} 🔔" if sym in symbols else sym, style="bold"))
+
+    def last_price(self, sym: str) -> float | None:
+        return self._last[sym].price if sym in self._last else None
 
     def update_tick(self, tick: Tick):
         sym = tick.symbol

@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import re
 import time
@@ -11,13 +12,16 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Input, Static
 
+from .alerts import KINDS, Alert, desktop_notify, valid_alert, valid_level
+from .alerts import check as check_alerts
 from .feed import Feed, Tick
 from .history import GRANULARITIES, SYMBOL_RE, fetch_candles, fetch_products, product_exists, search_products
-from .widgets import INDICATORS, ChartPane, PairPicker, PriceTable
+from .widgets import INDICATORS, ChartPane, PairPicker, PriceTable, fmt_price
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "crypto-terminal"
 WATCHLIST_FILE = CONFIG_DIR / "watchlist.json"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+ALERTS_FILE = CONFIG_DIR / "alerts.json"
 DEFAULT_WATCHLIST = ["BTC-USD", "ETH-USD", "XRP-USD", "SOL-USD", "ADA-USD"]
 QUERY_RE = re.compile(r"[A-Z0-9]{1,20}")  # coin search: `add sol`, `add solana`
 STALE_AFTER = 10  # seconds without any feed frame before the status line shows STALE
@@ -59,9 +63,32 @@ def save_indicators(names):
     write_json(CONFIG_FILE, {"indicators": [n for n in INDICATORS if n in names]})
 
 
-def parse_command(text: str) -> tuple[str, str | list[str] | None]:
+def load_alerts() -> list[Alert]:
+    try:
+        data = json.loads(ALERTS_FILE.read_text())
+    except (OSError, ValueError):
+        return []
+    out = []
+    for a in data if isinstance(data, list) else []:
+        try:
+            alert = Alert(a["symbol"], a["kind"], float(a["level"]), None if a.get("ref") is None else float(a["ref"]))
+        except (TypeError, KeyError, ValueError, AttributeError):
+            continue
+        if valid_alert(alert):
+            out.append(alert)
+    return out
+
+
+def save_alerts(alerts: list[Alert]):
+    write_json(ALERTS_FILE, [vars(a) for a in alerts])
+
+
+ALERT_USAGE = "usage: alert BTC-USD > 90000 · alert BTC-USD < 80000 · alert BTC-USD move 5%"
+
+
+def parse_command(text: str) -> tuple[str, str | list[str] | Alert | int | None]:
     """`add SOL-USD` -> ("add", "SOL-USD"), `add sol` -> ("find", "SOL"), `ind rsi` -> ("ind", ["rsi"]),
-    `quit` -> ("quit", None).
+    `alert BTC-USD > 90000` -> ("alert", Alert(...)), `unalert 2` -> ("unalert", 2), `quit` -> ("quit", None).
 
     Raises ValueError with a user-facing message.
     """
@@ -87,7 +114,28 @@ def parse_command(text: str) -> tuple[str, str | list[str] | None]:
         if not names or any(n not in INDICATORS for n in names):
             raise ValueError(f"usage: ind {' '.join(INDICATORS)} (toggles) or ind off")
         return "ind", names
-    raise ValueError(f"unknown command: {text.strip()} (try add / rm / ind / quit)")
+    if cmd == "alert":
+        if len(args) != 3 or not SYMBOL_RE.fullmatch(args[0].upper()) or args[1].lower() not in KINDS:
+            raise ValueError(ALERT_USAGE)
+        kind = args[1].lower()
+        try:
+            level = float(args[2].removesuffix("%") if kind == "move" else args[2])
+        except ValueError:
+            level = math.nan
+        if not valid_level(kind, level):
+            raise ValueError("move must be between 0 and 100%" if kind == "move" else "price must be a positive number")
+        return "alert", Alert(args[0].upper(), kind, level)
+    if cmd == "alerts" and not args:
+        return "alerts", None
+    if cmd == "unalert":
+        try:
+            index = int(args[0]) if len(args) == 1 else 0
+        except ValueError:
+            index = 0
+        if index < 1:
+            raise ValueError("usage: unalert N (numbers from `alerts`)")
+        return "unalert", index
+    raise ValueError(f"unknown command: {text.strip()} (try add / rm / ind / alert / alerts / unalert / quit)")
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -98,7 +146,7 @@ class TerminalApp(App):
     Screen { background: black; }
     #title { height: 1; padding: 0 1; background: #ffb000; color: black; text-style: bold; }
     #main { height: 1fr; }
-    PriceTable { width: 62; height: 1fr; background: black; border-right: solid #ffb000; }
+    PriceTable { width: 65; height: 1fr; background: black; border-right: solid #ffb000; }
     PriceTable > .datatable--header { background: black; color: #ffb000; text-style: bold; }
     PriceTable > .datatable--cursor { background: #3a2a00; }
     #cmd { display: none; background: black; border: solid #ffb000; }
@@ -116,8 +164,8 @@ class TerminalApp(App):
         with Horizontal(id="main"):
             yield PriceTable(id="watchlist")
             yield ChartPane(id="chart")
-        yield Input(placeholder="add SOL-USD · rm ADA-USD · ind sma20 ema50 vwap rsi · ind off · quit   (esc to close)",
-                    id="cmd")
+        yield Input(placeholder="add SOL-USD · add solana · rm ADA-USD · ind sma20 ema50 vwap rsi · ind off · "
+                                "alert BTC-USD > 90000 · alerts · unalert 1 · quit   (esc closes)", id="cmd")
         yield Static(id="status", markup=False)  # status carries server text: never parse it as markup
 
     def on_mount(self):
@@ -133,6 +181,8 @@ class TerminalApp(App):
         table.set_symbols(self.symbols)
         table.focus()
         self.query_one(ChartPane).set_indicators(load_indicators())
+        self.alerts = load_alerts()
+        table.set_alerts({a.symbol for a in self.alerts})
         self.restart_feed()
         self.load_products()
         self.set_interval(1, self.refresh_status)
@@ -161,6 +211,15 @@ class TerminalApp(App):
         self.query_one(PriceTable).update_tick(tick)
         if tick.symbol == self.selected:
             self.query_one(ChartPane).update_price(tick.symbol, tick.price)
+        if self.alerts:
+            fired, self.alerts = check_alerts(self.alerts, tick.symbol, tick.price)
+            if fired:
+                self.alerts_changed()
+                self.bell()
+                for alert in fired:
+                    message = f"{alert} · now {fmt_price(tick.price)}"
+                    self.notify(message, title="🔔 alert", severity="error", timeout=15)
+                    desktop_notify("crypto-terminal alert", message)
 
     def handle_feed_status(self, status: str):
         self.feed_status = status
@@ -238,6 +297,16 @@ class TerminalApp(App):
             chart = self.query_one(ChartPane)
             chart.set_indicators(chart.indicators ^ set(arg) if arg else ())  # toggle
             save_indicators(chart.indicators)
+        elif cmd == "alert":
+            self.add_alert(arg)
+        elif cmd == "alerts":
+            self.notify("\n".join(f"{i}. {a}" for i, a in enumerate(self.alerts, 1)) or "no alerts", markup=False)
+        elif cmd == "unalert":
+            if arg > len(self.alerts):
+                self.notify(f"no alert {arg} (see `alerts`)", severity="error")
+            else:
+                self.notify(f"removed: {self.alerts.pop(arg - 1)}", markup=False)
+                self.alerts_changed()
         elif arg not in self.symbols:
             self.notify(f"{arg} is not on the watchlist", severity="error")
         else:
@@ -272,9 +341,29 @@ class TerminalApp(App):
         else:
             self.push_screen(PairPicker(query, matches), lambda symbol: symbol and self.add_symbol(symbol))
 
+    def add_alert(self, alert: Alert):
+        # ticks only arrive for watchlist pairs, so an alert anywhere else could never fire
+        if alert.symbol not in self.symbols:
+            self.notify(f"{alert.symbol} is not on the watchlist: add it first", severity="error")
+            return
+        if alert.kind == "move":
+            ref = self.query_one(PriceTable).last_price(alert.symbol)
+            if ref is None:
+                self.notify(f"no price for {alert.symbol} yet: try again in a moment", severity="error")
+                return
+            alert = Alert(alert.symbol, alert.kind, alert.level, ref)
+        self.alerts.append(alert)
+        self.alerts_changed()
+        self.notify(f"alert set: {alert}", markup=False)
+
+    def alerts_changed(self):
+        save_alerts(self.alerts)
+        self.query_one(PriceTable).set_alerts({a.symbol for a in self.alerts})
+
     def watchlist_changed(self):
         save_watchlist(self.symbols)
         self.query_one(PriceTable).set_symbols(self.symbols)
+        self.query_one(PriceTable).set_alerts({a.symbol for a in self.alerts})
         self.restart_feed()
         if not self.symbols:
             self.load_chart()
