@@ -1,0 +1,22 @@
+# Push a version tag (e.g. v2.1.0) to test, build and publish to PyPI via Trusted Publishing (no tokens).
+name: Publish to PyPI
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # lets PyPI verify this workflow instead of a stored token
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt build
+      - run: pytest
+      - run: python -m build
+      - uses: pypa/gh-action-pypi-publish@release/v1

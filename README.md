@@ -4,7 +4,7 @@ A free, Bloomberg-style crypto terminal that runs in your shell. Live spot price
 
 ![Crypto terminal demo: live candles, indicators, coin search and a price alert](https://raw.githubusercontent.com/owen-alderson/crypto-terminal/main/docs/demo.gif)
 
-![Textual](https://img.shields.io/badge/built%20with-Textual-ffb000) ![Coinbase](https://img.shields.io/badge/data-Coinbase%20Exchange-0052FF)
+[![PyPI](https://img.shields.io/pypi/v/crypto-terminal?color=ffb000)](https://pypi.org/project/crypto-terminal/) ![Textual](https://img.shields.io/badge/built%20with-Textual-ffb000) ![Coinbase](https://img.shields.io/badge/data-Coinbase%20Exchange-0052FF)
 
 ## Install
 
