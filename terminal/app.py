@@ -24,9 +24,10 @@ STALE_AFTER = 10  # seconds without any feed frame before the status line shows 
 
 def load_watchlist() -> list[str]:
     try:
-        symbols = json.loads(WATCHLIST_FILE.read_text()).get("symbols")
-    except (OSError, ValueError, AttributeError):
+        data = json.loads(WATCHLIST_FILE.read_text())
+    except (OSError, ValueError):
         return list(DEFAULT_WATCHLIST)
+    symbols = data.get("symbols") if isinstance(data, dict) else None
     if not isinstance(symbols, list):
         return list(DEFAULT_WATCHLIST)
     # file is user-editable: keep only well-formed pairs, drop duplicates

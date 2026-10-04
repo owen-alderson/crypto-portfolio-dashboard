@@ -7,8 +7,7 @@ from websockets.asyncio.server import serve
 
 from terminal.feed import Feed
 
-TICK = {"type": "ticker", "product_id": "BTC-USD", "price": "100", "open_24h": "90",
-        "time": "2026-10-04T12:00:00.000000Z"}
+TICK = {"type": "ticker", "product_id": "BTC-USD", "price": "100", "open_24h": "90"}
 
 
 async def run_until(feed: Feed, ticks: list, n: int, timeout: float = 10):
@@ -25,7 +24,8 @@ async def test_reconnects_after_server_drops_connection():
     async def handler(ws):
         sub = json.loads(await ws.recv())
         assert sub["type"] == "subscribe" and sub["product_ids"] == ["BTC-USD"]
-        await ws.send("garbage")  # malformed frames are ignored, not fatal
+        for junk in ("garbage", "[1, 2]", b"\xff"):  # malformed frames are ignored, not fatal
+            await ws.send(junk)
         await ws.send(json.dumps(TICK))
         # returning closes the connection
 

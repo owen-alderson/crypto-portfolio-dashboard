@@ -56,8 +56,8 @@ async def test_ticks_update_table(offline):
         await pilot.pause()
         feed = FakeFeed.instances[-1]
         assert feed.symbols == app_module.DEFAULT_WATCHLIST
-        feed.on_tick(Tick("BTC-USD", 100.0, 90.0, 0))
-        feed.on_tick(Tick("BTC-USD", 101.0, 90.0, 0))
+        feed.on_tick(Tick("BTC-USD", 100.0, 90.0))
+        feed.on_tick(Tick("BTC-USD", 101.0, 90.0))
         table = app.query_one(PriceTable)
         last = table.get_cell("BTC-USD", "last")
         assert last.plain == "101.0000" and "green" in str(last.style)

@@ -7,7 +7,6 @@ import random
 import ssl
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Callable
 
 import certifi
@@ -26,16 +25,6 @@ class Tick:
     symbol: str
     price: float
     open_24h: float
-    ts: float  # exchange time, unix seconds
-
-
-def parse_message(raw) -> dict | None:
-    """Decode a feed frame; anything that isn't a JSON object is dropped."""
-    try:
-        msg = json.loads(raw)
-    except (TypeError, ValueError):
-        return None
-    return msg if isinstance(msg, dict) else None
 
 
 def parse_tick(msg: dict) -> Tick | None:
@@ -46,14 +35,12 @@ def parse_tick(msg: dict) -> Tick | None:
         symbol = msg["product_id"]
         price = float(msg["price"])
         open_24h = float(msg["open_24h"])
-        ts = datetime.fromisoformat(msg["time"].replace("Z", "+00:00")).timestamp()
-    except (KeyError, TypeError, ValueError, AttributeError):
+    except (KeyError, TypeError, ValueError):
         return None
-    if not isinstance(symbol, str) or not (math.isfinite(price) and price > 0):
+    # chained comparisons reject NaN, inf, zero and negatives
+    if not isinstance(symbol, str) or not (0 < price < math.inf and 0 < open_24h < math.inf):
         return None
-    if not (math.isfinite(open_24h) and open_24h > 0):
-        return None
-    return Tick(symbol, price, open_24h, ts)
+    return Tick(symbol, price, open_24h)
 
 
 class Feed:
@@ -85,8 +72,12 @@ class Feed:
                     live = False
                     while True:
                         # wait_for catches a half-open socket that never errors
-                        msg = parse_message(await asyncio.wait_for(ws.recv(), self.reconnect_after))
-                        if msg is None:
+                        raw = await asyncio.wait_for(ws.recv(), self.reconnect_after)
+                        try:
+                            msg = json.loads(raw)
+                        except ValueError:
+                            continue
+                        if not isinstance(msg, dict):
                             continue
                         if msg.get("type") == "error":
                             raise RuntimeError(str(msg.get("reason") or msg.get("message")))

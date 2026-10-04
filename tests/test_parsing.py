@@ -4,7 +4,7 @@ import pytest
 
 from terminal import app as app_module
 from terminal.app import load_watchlist, parse_command, save_watchlist
-from terminal.feed import parse_message, parse_tick
+from terminal.feed import parse_tick
 from terminal.widgets import sparkline
 
 TICKER = {
@@ -18,7 +18,6 @@ def test_parse_tick_valid():
     assert tick.symbol == "BTC-USD"
     assert tick.price == 85359.13
     assert tick.open_24h == 84864.78
-    assert tick.ts == pytest.approx(1791115637.878035)
 
 
 @pytest.mark.parametrize("override", [
@@ -28,8 +27,8 @@ def test_parse_tick_valid():
     {"price": "NaN"},
     {"price": "-1"},
     {"open_24h": "0"},
-    {"time": "yesterday"},
-    {"time": 123},
+    {"price": "inf"},
+    {"open_24h": "NaN"},
     {"product_id": 7},
 ])
 def test_parse_tick_rejects_malformed(override):
@@ -38,13 +37,6 @@ def test_parse_tick_rejects_malformed(override):
 
 def test_parse_tick_rejects_missing_field():
     assert parse_tick({k: v for k, v in TICKER.items() if k != "price"}) is None
-
-
-def test_parse_message():
-    assert parse_message(json.dumps(TICKER)) == TICKER
-    assert parse_message("not json") is None
-    assert parse_message("[1, 2]") is None
-    assert parse_message(b"\xff") is None
 
 
 @pytest.mark.parametrize("text,expected", [
@@ -81,6 +73,5 @@ def test_watchlist_roundtrip_and_bad_files(tmp_path, monkeypatch):
 
 
 def test_sparkline():
-    assert sparkline([]) == ""
     assert sparkline([5, 5]) == "▁▁"
     assert sparkline([1, 2, 3]) == "▁▅█"

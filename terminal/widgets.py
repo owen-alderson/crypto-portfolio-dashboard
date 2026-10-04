@@ -17,12 +17,8 @@ def fmt_price(value: float) -> str:
     return f"{value:,.2f}" if value >= 1_000 else f"{value:.4f}"
 
 
-def change_arrow(pct: float) -> str:
-    return "▲" if pct >= 0 else "▼"
-
-
 def sparkline(values) -> str:
-    lo, hi = min(values, default=0), max(values, default=0)
+    lo, hi = min(values), max(values)
     if hi == lo:
         return SPARK[0] * len(values)
     return "".join(SPARK[round((v - lo) / (hi - lo) * (len(SPARK) - 1))] for v in values)
@@ -65,7 +61,7 @@ class PriceTable(DataTable):
                 self._flashing.add(sym)
                 self.set_timer(FLASH_SECONDS, lambda: self._unflash(sym))
         pct = (tick.price - tick.open_24h) / tick.open_24h * 100
-        self.update_cell(sym, "chg", Text(f"{change_arrow(pct)} {pct:+.2f}%", style=UP if pct >= 0 else DOWN))
+        self.update_cell(sym, "chg", Text(f"{'▲' if pct >= 0 else '▼'} {pct:+.2f}%", style=UP if pct >= 0 else DOWN))
         self.update_cell(sym, "spark", Text(sparkline(self._spark[sym]), style="dark_orange"))
         self._render_price(sym)
 
@@ -86,7 +82,6 @@ class ChartPane(PlotextPlot):
         self.show_message("select a pair")
 
     def show_message(self, text: str):
-        self.plt.clear_data()
         self.plt.clear_figure()
         self.plt.title(text)
         self.refresh()
@@ -98,7 +93,6 @@ class ChartPane(PlotextPlot):
         times = [t for t, _ in closes]
         fmt = "%d/%m" if label == "7d" else "%H:%M"
         ticks = times[:: max(1, len(times) // 5)]
-        self.plt.clear_data()
         self.plt.clear_figure()
         self.plt.plot(times, [c for _, c in closes], color="orange", marker="braille")
         self.plt.xticks(ticks, [datetime.fromtimestamp(t, timezone.utc).strftime(fmt) for t in ticks])
