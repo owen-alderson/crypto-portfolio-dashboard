@@ -1,3 +1,4 @@
+import time
 from collections import deque
 from datetime import datetime, timezone
 
@@ -6,11 +7,14 @@ from textual.widgets import DataTable
 from textual_plotext import PlotextPlot
 
 from .feed import Tick
+from .history import Candle, apply_tick
 
 SPARK = "▁▂▃▄▅▆▇█"
 SPARK_LEN = 20
 FLASH_SECONDS = 0.5
 UP, DOWN = "green", "red"
+REDRAW_EVERY = 0.5  # live candle redraws at most twice a second
+VOLUME_ROWS = 7
 
 
 def fmt_price(value: float) -> str:
@@ -77,24 +81,63 @@ class PriceTable(DataTable):
 
 
 class ChartPane(PlotextPlot):
+    """Candles for one pair; the last candle follows live ticks via `update_price`."""
+
     def on_mount(self):
         self.theme = "dark"
+        self.symbol, self.candles, self._dirty = None, [], False
+        self.set_interval(REDRAW_EVERY, self._redraw_if_dirty)
         self.show_message("select a pair")
 
     def show_message(self, text: str):
+        self.candles = []  # stop live updates until the next `show`
         self.plt.clear_figure()
         self.plt.title(text)
         self.refresh()
 
-    def show(self, symbol: str, label: str, closes: list[tuple[float, float]]):
-        if not closes:
+    def show(self, symbol: str, label: str, granularity: int, candles: list[Candle]):
+        if not candles:
             return self.show_message(f"{symbol} {label}: no data")
+        self.symbol, self.label, self.granularity, self.candles = symbol, label, granularity, candles
+        self._draw()
+
+    def update_price(self, symbol: str, price: float):
+        if self.candles and symbol == self.symbol:
+            apply_tick(self.candles, price, time.time(), self.granularity)
+            self._dirty = True
+
+    def on_resize(self):
+        self._dirty = bool(self.candles)  # visible candle count depends on width
+
+    def _redraw_if_dirty(self):
+        if self._dirty and self.candles:
+            self._draw()
+
+    def _draw(self):
+        self._dirty = False
+        # one terminal column per candle: draw the tail that fits
+        shown = self.candles[-max(10, self.size.width - 12):]
+        times = [c.t for c in shown]
         # numeric x + our own tick labels: plotext's date parsing loses the day for "H:M" and wraps at midnight
-        times = [t for t, _ in closes]
-        fmt = "%d/%m" if label == "7d" else "%H:%M"
+        fmt = "%d/%m" if self.granularity >= 3600 else "%H:%M"
         ticks = times[:: max(1, len(times) // 5)]
-        self.plt.clear_figure()
-        self.plt.plot(times, [c for _, c in closes], color="orange", marker="braille")
-        self.plt.xticks(ticks, [datetime.fromtimestamp(t, timezone.utc).strftime(fmt) for t in ticks])
-        self.plt.title(f"{symbol} · {label} · close {fmt_price(closes[-1][1])} (UTC)")
+        plt = self.plt
+        plt.clear_figure()
+        plt.subplots(2, 1)
+        top = plt.subplot(1, 1)
+        top.candlestick(times, {"Open": [c.o for c in shown], "Close": [c.c for c in shown],
+                                "High": [c.h for c in shown], "Low": [c.l for c in shown]})
+        top.xticks([])
+        top.title(f"{self.symbol} · {self.label} · {fmt_price(shown[-1].c)} (UTC)")
+        # our own y labels, padded to one width, so every panel's x axis lines up under the candles
+        lo, hi = min(c.l for c in shown), max(c.h for c in shown)
+        ys = [lo + (hi - lo) * i / 4 for i in range(5)]
+        width = max(len(fmt_price(y)) for y in ys)
+        top.yticks(ys, [fmt_price(y).rjust(width) for y in ys])
+        vol = plt.subplot(2, 1)
+        vol.plotsize(None, VOLUME_ROWS)
+        vmax = max(c.v for c in shown)
+        vol.bar(times, [c.v for c in shown], color="blue", width=0.5)
+        vol.yticks([0, vmax], ["0".rjust(width), fmt_price(vmax).rjust(width)])
+        vol.xticks(ticks, [datetime.fromtimestamp(t, timezone.utc).strftime(fmt) for t in ticks])
         self.refresh()

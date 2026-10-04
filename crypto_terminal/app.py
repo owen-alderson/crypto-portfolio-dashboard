@@ -12,7 +12,7 @@ from textual.containers import Horizontal
 from textual.widgets import Input, Static
 
 from .feed import Feed, Tick
-from .history import TIMEFRAMES, fetch_closes, product_exists
+from .history import GRANULARITIES, fetch_candles, product_exists
 from .widgets import ChartPane, PriceTable
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "crypto-terminal"
@@ -77,13 +77,11 @@ class TerminalApp(App):
         ("slash", "command", "Command"),
         ("colon", "command", "Command"),
         ("escape", "close_command", "Close command bar"),
-        ("1", "timeframe('1')", "1h"),
-        ("2", "timeframe('2')", "1d"),
-        ("3", "timeframe('3')", "7d"),
+        *((key, f"timeframe('{key}')", label) for key, (label, _) in GRANULARITIES.items()),
     ]
 
     def compose(self) -> ComposeResult:
-        yield Static("CRYPTO TERMINAL · COINBASE SPOT · [1] 1h [2] 1d [3] 7d · [/] command", id="title", markup=False)
+        yield Static("CRYPTO TERMINAL · COINBASE SPOT · [1-6] 1m 5m 15m 1h 6h 1d · [/] command", id="title", markup=False)
         with Horizontal(id="main"):
             yield PriceTable(id="watchlist")
             yield ChartPane(id="chart")
@@ -97,7 +95,7 @@ class TerminalApp(App):
         self.feed_status = "idle"
         self.last_tick = 0.0
         self.selected: str | None = None
-        self.timeframe = "2"
+        self.timeframe = "1"
         table = self.query_one(PriceTable)
         table.set_symbols(self.symbols)
         table.focus()
@@ -126,6 +124,8 @@ class TerminalApp(App):
     def handle_tick(self, tick: Tick):
         self.last_tick = time.monotonic()
         self.query_one(PriceTable).update_tick(tick)
+        if tick.symbol == self.selected:
+            self.query_one(ChartPane).update_price(tick.symbol, tick.price)
 
     def handle_feed_status(self, status: str):
         self.feed_status = status
@@ -157,14 +157,14 @@ class TerminalApp(App):
         if self.selected not in self.symbols:
             chart.show_message("watchlist empty: press / then `add BTC-USD`")
             return
-        symbol, (label, span, granularity) = self.selected, TIMEFRAMES[self.timeframe]
+        symbol, (label, granularity) = self.selected, GRANULARITIES[self.timeframe]
         chart.show_message(f"loading {symbol} {label}…")
         try:
-            closes = await fetch_closes(self.http, symbol, span, granularity)
+            candles = await fetch_candles(self.http, symbol, granularity)
         except httpx.HTTPError as e:
             chart.show_message(f"{symbol} {label}: history unavailable ({type(e).__name__})")
             return
-        chart.show(symbol, label, closes)
+        chart.show(symbol, label, granularity, candles)
 
     # ── command bar ──
 

@@ -9,7 +9,8 @@ import pytest
 from crypto_terminal import app as app_module
 from crypto_terminal.app import TerminalApp
 from crypto_terminal.feed import Tick
-from crypto_terminal.widgets import PriceTable
+from crypto_terminal.history import Candle
+from crypto_terminal.widgets import ChartPane, PriceTable
 
 
 class FakeFeed:
@@ -35,11 +36,13 @@ def offline(tmp_path, monkeypatch):
     async def fake_exists(client, symbol):
         return symbol == "DOGE-USD"
 
-    async def fake_closes(client, symbol, span, granularity):
-        return [(1_700_000_000 + i * granularity, 100.0 + i) for i in range(10)]
+    async def fake_candles(client, symbol, granularity):
+        now = time.time()
+        start = now - now % granularity - 9 * granularity
+        return [Candle(start + i * granularity, 100.0 + i, 101.0 + i, 99.0 + i, 100.5 + i, 3.0) for i in range(10)]
 
     monkeypatch.setattr(app_module, "product_exists", fake_exists)
-    monkeypatch.setattr(app_module, "fetch_closes", fake_closes)
+    monkeypatch.setattr(app_module, "fetch_candles", fake_candles)
     return path
 
 
@@ -104,8 +107,8 @@ async def test_keys_in_command_bar_do_not_trigger_bindings(offline):
     app = TerminalApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("slash", "1")
-        assert app.timeframe == "2"
+        await pilot.press("slash", "3")
+        assert app.timeframe == "1"
         await pilot.press("escape")
         await pilot.press("3")
         assert app.timeframe == "3"
@@ -130,3 +133,18 @@ async def test_empty_watchlist_stops_feed(offline):
         await type_command(pilot, "rm BTC-USD")
         assert app.symbols == [] and app.feed is None
         assert "IDLE" in str(app.query_one("#status").render())
+
+
+async def test_live_tick_moves_last_candle_of_selected_pair_only(offline):
+    app = TerminalApp()
+    async with app.run_test(size=(150, 40)) as pilot:
+        await pilot.pause(0.3)
+        chart = app.query_one(ChartPane)
+        assert app.selected == "BTC-USD" and chart.symbol == "BTC-USD" and len(chart.candles) == 10
+        feed = FakeFeed.instances[-1]
+        feed.on_tick(Tick("ETH-USD", 500.0, 90.0))  # not the charted pair: ignored
+        assert chart.candles[-1].h == 110.0
+        feed.on_tick(Tick("BTC-USD", 120.0, 90.0))
+        assert chart.candles[-1].c == 120.0 and chart.candles[-1].h == 120.0 and len(chart.candles) == 10
+        await pilot.pause(0.6)  # redraw timer picks it up
+        assert not chart._dirty
