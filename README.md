@@ -2,7 +2,7 @@
 
 A free, Bloomberg-style crypto terminal that runs in your shell. Live spot prices stream straight from the Coinbase Exchange public websocket: no API key, no account, no polling. Candlestick charts with a live last bar, indicators, price alerts, and search across every Coinbase pair.
 
-![Crypto terminal screenshot](https://raw.githubusercontent.com/owen-alderson/crypto-terminal/main/docs/screenshot.svg)
+![Crypto terminal demo: live candles, indicators, coin search and a price alert](https://raw.githubusercontent.com/owen-alderson/crypto-terminal/main/docs/demo.gif)
 
 ![Textual](https://img.shields.io/badge/built%20with-Textual-ffb000) ![Coinbase](https://img.shields.io/badge/data-Coinbase%20Exchange-0052FF)
 
