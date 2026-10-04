@@ -1,66 +1,71 @@
-# crypto-portfolio-dashboard
+# crypto-terminal
 
-A live crypto portfolio tracker built with Streamlit. Track your XRP, RLUSD, BTC, ETH and more — see real-time prices, 24h changes, price history charts, and portfolio allocation. No API key required.
+A free, Bloomberg-style crypto terminal that runs in your shell. Live spot prices stream straight from the Coinbase Exchange public websocket: no API key, no account, no polling.
 
-![Dashboard preview](https://img.shields.io/badge/built%20with-Streamlit-FF4B4B) ![CoinGecko](https://img.shields.io/badge/data-CoinGecko-8DC63F)
+![Crypto terminal screenshot](docs/screenshot.svg)
+
+![Textual](https://img.shields.io/badge/built%20with-Textual-ffb000) ![Coinbase](https://img.shields.io/badge/data-Coinbase%20Exchange-0052FF)
 
 ## Features
 
-- **Live prices** — pulls from CoinGecko's free public API, refreshes every 60s
-- **Portfolio overview** — total value and 24h change in dollars and percent
-- **Asset cards** — price, 24h change, and holding value per asset
-- **Price history chart** — 7, 30, or 90 day view with fill chart
-- **Allocation pie chart** — see how your portfolio is distributed
-- **Editable holdings** — update amounts directly in the sidebar, saved to `portfolio.json`
+- **Live watchlist**: last price, 24h change, and a sparkline of recent ticks. Prices flash green/red on every up/down tick.
+- **Chart pane**: price history for the highlighted pair over 1h, 1d or 7d (Coinbase candles).
+- **Command bar**: add and remove pairs; the watchlist is saved to `watchlist.json`.
+- **Status line**: connection state, time since the last tick, UTC clock. Shows `STALE` after 10s without data and reconnects automatically with exponential backoff.
 
-## Supported assets
-
-| Symbol | Name |
-|---|---|
-| BTC | Bitcoin |
-| XRP | XRP |
-| ETH | Ethereum |
-| RLUSD | Ripple USD |
-| SOL | Solana |
-| ADA | Cardano |
+Default pairs: BTC-USD, ETH-USD, XRP-USD, SOL-USD, ADA-USD. Any Coinbase spot pair works.
 
 ## Setup
 
-**1. Clone the repo**
+Requires Python 3.10+.
+
 ```bash
 git clone https://github.com/owen-alderson/crypto-portfolio-dashboard.git
 cd crypto-portfolio-dashboard
-```
-
-**2. Install dependencies**
-```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+python -m terminal
 ```
 
-**3. Run the app**
+## Keys
+
+| Key | Action |
+|---|---|
+| `↑` `↓` | Select pair (chart follows) |
+| `1` `2` `3` | Chart timeframe: 1h, 1d, 7d |
+| `/` or `:` | Open command bar (`esc` closes it) |
+| `ctrl+q` | Quit |
+
+## Commands
+
+| Command | Effect |
+|---|---|
+| `add SOL-USD` | Add a pair (checked against Coinbase first) |
+| `rm ADA-USD` | Remove a pair |
+| `quit` | Exit |
+
+## Architecture
+
+```
+terminal/
+  feed.py      websocket client: subscribes to ticker + heartbeat, validates each message,
+               reconnects with exponential backoff (1s → 30s); 30s of silence = dead socket
+  history.py   REST: candles for the chart, product lookup for `add`
+  widgets.py   PriceTable (watchlist) and ChartPane (textual-plotext)
+  app.py       Textual app: layout, command parsing, watchlist persistence, status line
+tests/         pytest: message + command parsing, reconnect against a local websocket
+               server, headless UI tests with Textual's Pilot (no internet needed)
+```
+
+The feed and the chart fetch run as Textual async workers; changing the watchlist restarts the feed worker, and a new chart request cancels the previous one so a slow response can't draw the wrong pair.
+
+## Tests
+
 ```bash
-streamlit run app.py
+pytest
 ```
 
-The app opens in your browser at `http://localhost:8501`.
+## History
 
-## Customizing your holdings
-
-Edit the amounts in the sidebar and click **Save Holdings** — your portfolio is stored in `portfolio.json`. Default values are set as placeholders; change them to your actual holdings.
-
-You can also edit `portfolio.json` directly:
-```json
-{
-  "holdings": {
-    "bitcoin": 0.5,
-    "ripple": 5000,
-    "ethereum": 2.0,
-    "ripple-usd": 1000
-  }
-}
-```
-
-## Requirements
-
-- Python 3.8+
-- Internet connection (for live CoinGecko data)
+This repo started as a Streamlit + CoinGecko portfolio dashboard that polled every 60s. That version is preserved at the `v1-streamlit` tag (`git checkout v1-streamlit`).
