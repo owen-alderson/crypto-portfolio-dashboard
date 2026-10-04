@@ -1,39 +1,50 @@
 # crypto-terminal
 
-A free, Bloomberg-style crypto terminal that runs in your shell. Live spot prices stream straight from the Coinbase Exchange public websocket: no API key, no account, no polling.
+A free, Bloomberg-style crypto terminal that runs in your shell. Live spot prices stream straight from the Coinbase Exchange public websocket: no API key, no account, no polling. Candlestick charts with a live last bar, indicators, price alerts, and search across every Coinbase pair.
 
-![Crypto terminal screenshot](docs/screenshot.svg)
+![Crypto terminal screenshot](https://raw.githubusercontent.com/owen-alderson/crypto-portfolio-dashboard/main/docs/screenshot.svg)
 
 ![Textual](https://img.shields.io/badge/built%20with-Textual-ffb000) ![Coinbase](https://img.shields.io/badge/data-Coinbase%20Exchange-0052FF)
 
-## Features
-
-- **Live watchlist**: last price, 24h change, and a sparkline of recent ticks. Prices flash green/red on every up/down tick.
-- **Chart pane**: price history for the highlighted pair over 1h, 1d or 7d (Coinbase candles).
-- **Command bar**: add and remove pairs; the watchlist is saved to `watchlist.json`.
-- **Status line**: connection state, time since the last tick, UTC clock. Shows `STALE` after 10s without data and reconnects automatically with exponential backoff.
-
-Default pairs: BTC-USD, ETH-USD, XRP-USD, SOL-USD, ADA-USD. Any Coinbase spot pair works.
-
-## Setup
+## Install
 
 Requires Python 3.10+.
 
 ```bash
-git clone https://github.com/owen-alderson/crypto-portfolio-dashboard.git
-cd crypto-portfolio-dashboard
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python -m terminal
+pipx install crypto-terminal
+crypto-terminal
 ```
+
+Or `pip install crypto-terminal` into any virtualenv.
+
+## Features
+
+- **Live watchlist**: last price, 24h change, and a sparkline of recent ticks. Prices flash green/red on every up/down tick.
+- **Candlestick chart** for the highlighted pair, with volume underneath. Six timeframes (1m to 1d candles). The last candle follows the live price and a new one opens at each candle boundary.
+- **Indicators**: SMA 20, EMA 50 and VWAP (resets at the UTC day) over the candles, RSI 14 in its own panel.
+- **Coin search**: `add solana` lists every online Solana pair (USD, USDC, USDT, EUR, GBP and BTC quotes first). Exact pairs like `add SOL-BTC` add directly. Sub-cent and BTC-quoted prices keep 5 significant figures.
+- **Price alerts**: on a level (`>` / `<`) or a percentage move. A firing alert rings the terminal bell, shows a toast, and sends a desktop notification (macOS, or Linux with `notify-send`). Pairs with an alert carry a 🔔.
+- **Status line**: connection state, time since the last tick, UTC clock. Shows `STALE` after 10s without data and reconnects automatically with exponential backoff.
+
+Default pairs: BTC-USD, ETH-USD, XRP-USD, SOL-USD, ADA-USD.
+
+## How live is it?
+
+Measured on the five default pairs over 60s:
+
+| | Quiet (Sunday) | Busy |
+|---|---|---|
+| Price updates | ~5.5 / s | ~12 / s |
+| Bandwidth | ~0.02 Mbps | ~0.04 Mbps |
+
+Coinbase pushes an update on every trade (bursts are batched); nothing is polled. A heartbeat arrives every second, so a dead connection is spotted and replaced within seconds. The chart redraws at most twice a second.
 
 ## Keys
 
 | Key | Action |
 |---|---|
 | `↑` `↓` | Select pair (chart follows) |
-| `1` `2` `3` | Chart timeframe: 1h, 1d, 7d |
+| `1` – `6` | Candles: 1m, 5m, 15m, 1h, 6h, 1d |
 | `/` or `:` | Open command bar (`esc` closes it) |
 | `ctrl+q` | Quit |
 
@@ -41,24 +52,46 @@ python -m terminal
 
 | Command | Effect |
 |---|---|
-| `add SOL-USD` | Add a pair (checked against Coinbase first) |
+| `add SOL-USD` | Add a pair |
+| `add sol` / `add solana` | Search by symbol or name: pick with `↑` `↓`, `enter` adds, `esc` cancels |
 | `rm ADA-USD` | Remove a pair |
+| `ind sma20 ema50 vwap rsi` | Toggle indicators (any subset) |
+| `ind off` | Clear all indicators |
+| `alert BTC-USD > 90000` | Alert when the price reaches 90,000 or more (`<` for at or below) |
+| `alert BTC-USD move 5%` | Alert on a ±5% move from the current price |
+| `alerts` | List alerts with their numbers |
+| `unalert 2` | Remove alert 2 |
 | `quit` | Exit |
+
+Alerts fire once and are then removed. The watchlist, indicators and alerts are saved in `~/.config/crypto-terminal/` (or `$XDG_CONFIG_HOME/crypto-terminal/`).
+
+## From source
+
+```bash
+git clone https://github.com/owen-alderson/crypto-portfolio-dashboard.git
+cd crypto-portfolio-dashboard
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m crypto_terminal
+```
 
 ## Architecture
 
 ```
-terminal/
-  feed.py      websocket client: subscribes to ticker + heartbeat, validates each message,
-               reconnects with exponential backoff (1s → 30s); 30s of silence = dead socket
-  history.py   REST: candles for the chart, product lookup for `add`
-  widgets.py   PriceTable (watchlist) and ChartPane (textual-plotext)
-  app.py       Textual app: layout, command parsing, watchlist persistence, status line
-tests/         pytest: message + command parsing, reconnect against a local websocket
-               server, headless UI tests with Textual's Pilot (no internet needed)
+crypto_terminal/
+  feed.py        websocket client: subscribes to ticker + heartbeat, validates each message,
+                 reconnects with exponential backoff (1s → 30s); 30s of silence = dead socket
+  history.py     REST: candles, the product list for search, the live-candle update
+  indicators.py  SMA, EMA, RSI, VWAP as pure functions
+  alerts.py      alert rules, trigger check, desktop notification
+  widgets.py     PriceTable (watchlist), ChartPane (textual-plotext), PairPicker (search results)
+  app.py         Textual app: layout, command parsing, saved config, status line
+tests/           pytest: parsing, indicators against reference values, search, alerts, reconnect
+                 against a local websocket server, headless UI tests with Textual's Pilot (no internet)
 ```
 
-The feed and the chart fetch run as Textual async workers; changing the watchlist restarts the feed worker, and a new chart request cancels the previous one so a slow response can't draw the wrong pair.
+The feed, the chart fetch and the product list run as Textual async workers. Changing the watchlist restarts the feed worker, and a new chart request cancels the previous one so a slow response can't draw the wrong pair.
 
 ## Tests
 
