@@ -5,7 +5,7 @@ import json
 
 from websockets.asyncio.server import serve
 
-from terminal.feed import Feed
+from crypto_terminal.feed import Feed
 
 TICK = {"type": "ticker", "product_id": "BTC-USD", "price": "100", "open_24h": "90"}
 

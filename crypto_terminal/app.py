@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -14,7 +15,8 @@ from .feed import Feed, Tick
 from .history import TIMEFRAMES, fetch_closes, product_exists
 from .widgets import ChartPane, PriceTable
 
-WATCHLIST_FILE = Path(__file__).parent.parent / "watchlist.json"
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "crypto-terminal"
+WATCHLIST_FILE = CONFIG_DIR / "watchlist.json"
 DEFAULT_WATCHLIST = ["BTC-USD", "ETH-USD", "XRP-USD", "SOL-USD", "ADA-USD"]
 SYMBOL_RE = re.compile(r"[A-Z0-9]{1,10}-[A-Z0-9]{2,10}")
 STALE_AFTER = 10  # seconds without any feed frame before the status line shows STALE
@@ -35,6 +37,7 @@ def load_watchlist() -> list[str]:
 
 
 def save_watchlist(symbols: list[str]):
+    WATCHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
     WATCHLIST_FILE.write_text(json.dumps({"symbols": symbols}, indent=2))
 
 

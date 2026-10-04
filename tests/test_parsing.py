@@ -2,10 +2,10 @@ import json
 
 import pytest
 
-from terminal import app as app_module
-from terminal.app import load_watchlist, parse_command, save_watchlist
-from terminal.feed import parse_tick
-from terminal.widgets import sparkline
+from crypto_terminal import app as app_module
+from crypto_terminal.app import load_watchlist, parse_command, save_watchlist
+from crypto_terminal.feed import parse_tick
+from crypto_terminal.widgets import sparkline
 
 TICKER = {
     "type": "ticker", "product_id": "BTC-USD", "price": "85359.13", "open_24h": "84864.78",
@@ -59,7 +59,7 @@ def test_parse_command_invalid(text):
 
 
 def test_watchlist_roundtrip_and_bad_files(tmp_path, monkeypatch):
-    path = tmp_path / "watchlist.json"
+    path = tmp_path / "crypto-terminal" / "watchlist.json"  # config dir is created on first save
     monkeypatch.setattr(app_module, "WATCHLIST_FILE", path)
     assert load_watchlist() == app_module.DEFAULT_WATCHLIST  # missing file
     save_watchlist(["BTC-USD", "DOGE-USD"])

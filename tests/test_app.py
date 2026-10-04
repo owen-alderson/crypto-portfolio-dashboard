@@ -6,10 +6,10 @@ import time
 
 import pytest
 
-from terminal import app as app_module
-from terminal.app import TerminalApp
-from terminal.feed import Tick
-from terminal.widgets import PriceTable
+from crypto_terminal import app as app_module
+from crypto_terminal.app import TerminalApp
+from crypto_terminal.feed import Tick
+from crypto_terminal.widgets import PriceTable
 
 
 class FakeFeed:
