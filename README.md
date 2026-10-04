@@ -102,3 +102,7 @@ pytest
 ## History
 
 This repo started as a Streamlit + CoinGecko portfolio dashboard that polled every 60s. That version is preserved at the `v1-streamlit` tag (`git checkout v1-streamlit`).
+
+## License
+
+MIT, see [LICENSE](LICENSE). Provided as is, with no warranty: this is a market-data viewer, not financial advice.
