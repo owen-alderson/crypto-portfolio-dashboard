@@ -1,12 +1,15 @@
 """Coinbase Exchange REST: candle history and product lookup (public, no API key)."""
 
 import math
+import re
 import time
 from typing import NamedTuple
 
 import httpx
 
 REST_BASE = "https://api.exchange.coinbase.com"
+SYMBOL_RE = re.compile(r"[A-Z0-9]{1,10}-[A-Z0-9]{2,10}")
+QUOTE_RANK = ("USD", "USDC", "USDT", "EUR", "GBP", "BTC")  # search lists these quotes first, in this order
 MAX_CANDLES = 300  # Coinbase caps a request at 300 candles
 
 # key -> (label, candle granularity in seconds): every granularity Coinbase offers
@@ -27,6 +30,48 @@ class Candle(NamedTuple):
     l: float
     c: float
     v: float
+
+
+class Product(NamedTuple):
+    id: str
+    base: str
+    quote: str
+    name: str  # base coin's full name ("Solana"), "" if unknown
+
+
+async def fetch_products(client: httpx.AsyncClient) -> list[Product]:
+    """Every online pair, with coin names from /currencies when available. Raises httpx.HTTPError / ValueError."""
+    resp = await client.get(f"{REST_BASE}/products", timeout=10)
+    resp.raise_for_status()
+    rows = resp.json()
+    names = {}
+    try:  # names are a nicety: search by symbol still works without them
+        cur = await client.get(f"{REST_BASE}/currencies", timeout=10)
+        cur.raise_for_status()
+        currencies = cur.json()
+        names = {c["id"]: c["name"] for c in currencies if isinstance(c, dict)
+                 and isinstance(c.get("id"), str) and isinstance(c.get("name"), str)} if isinstance(currencies, list) else {}
+    except (httpx.HTTPError, ValueError):
+        pass
+    out = []
+    for row in rows if isinstance(rows, list) else []:
+        if (isinstance(row, dict) and row.get("status") == "online" and row.get("trading_disabled") is False
+                and isinstance(row.get("id"), str) and SYMBOL_RE.fullmatch(row["id"])):
+            base, quote = row["id"].split("-")
+            out.append(Product(row["id"], base, quote, names.get(base, "")))
+    return out
+
+
+def search_products(products: list[Product], query: str) -> list[Product]:
+    """Pairs whose coin symbol or name matches `query` (exact before prefix), best-known quote currencies first."""
+    q = query.upper()
+
+    def rank(p: Product):
+        exact = q in (p.base, p.name.upper())
+        quote = QUOTE_RANK.index(p.quote) if p.quote in QUOTE_RANK else len(QUOTE_RANK)
+        return not exact, quote, p.id
+
+    return sorted((p for p in products if p.base.startswith(q) or p.name.upper().startswith(q)), key=rank)
 
 
 async def fetch_candles(client: httpx.AsyncClient, symbol: str, granularity: int) -> list[Candle]:

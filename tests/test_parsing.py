@@ -5,7 +5,7 @@ import pytest
 from crypto_terminal import app as app_module
 from crypto_terminal.app import load_indicators, load_watchlist, parse_command, save_indicators, save_watchlist
 from crypto_terminal.feed import parse_tick
-from crypto_terminal.widgets import sparkline
+from crypto_terminal.widgets import fmt_price, sparkline
 
 TICKER = {
     "type": "ticker", "product_id": "BTC-USD", "price": "85359.13", "open_24h": "84864.78",
@@ -44,6 +44,8 @@ def test_parse_tick_rejects_missing_field():
     ("  ADD   sol-usd ", ("add", "SOL-USD")),
     ("rm ADA-USD", ("rm", "ADA-USD")),
     ("quit", ("quit", None)),
+    ("add sol", ("find", "SOL")),
+    ("add Solana", ("find", "SOLANA")),
     ("ind SMA20 rsi", ("ind", ["sma20", "rsi"])),
     ("ind off", ("ind", [])),
 ])
@@ -52,7 +54,7 @@ def test_parse_command_valid(text, expected):
 
 
 @pytest.mark.parametrize("text", [
-    "", "   ", "add", "add SOL-USD ETH-USD", "add SOL", "add ../../etc", "add SOL-USD?x=1",
+    "", "   ", "add", "add SOL-USD ETH-USD", "rm SOL", "add sol!", "add ../../etc", "add SOL-USD?x=1",
     "rm", "buy BTC-USD", "quit now", "ind", "ind macd", "ind off rsi",
 ])
 def test_parse_command_invalid(text):
@@ -90,3 +92,17 @@ def test_indicators_config_roundtrip_and_bad_files(tmp_path, monkeypatch):
         assert load_indicators() == []
     path.write_text('{"indicators": ["rsi", "macd", 5, "rsi"]}')
     assert load_indicators() == ["rsi"]
+
+
+@pytest.mark.parametrize("value,expected", [
+    (85231.194, "85,231.19"),
+    (1000, "1,000.00"),
+    (121.69, "121.69"),
+    (1.5018, "1.5018"),
+    (0.2459, "0.24590"),
+    (0.00213, "0.0021300"),     # e.g. SOL-BTC: must not round to 0.0000
+    (0.0000123456, "0.000012346"),
+    (0, "0.00"),
+])
+def test_fmt_price_significant_figures(value, expected):
+    assert fmt_price(value) == expected

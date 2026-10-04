@@ -12,14 +12,14 @@ from textual.containers import Horizontal
 from textual.widgets import Input, Static
 
 from .feed import Feed, Tick
-from .history import GRANULARITIES, fetch_candles, product_exists
-from .widgets import INDICATORS, ChartPane, PriceTable
+from .history import GRANULARITIES, SYMBOL_RE, fetch_candles, fetch_products, product_exists, search_products
+from .widgets import INDICATORS, ChartPane, PairPicker, PriceTable
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "crypto-terminal"
 WATCHLIST_FILE = CONFIG_DIR / "watchlist.json"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_WATCHLIST = ["BTC-USD", "ETH-USD", "XRP-USD", "SOL-USD", "ADA-USD"]
-SYMBOL_RE = re.compile(r"[A-Z0-9]{1,10}-[A-Z0-9]{2,10}")
+QUERY_RE = re.compile(r"[A-Z0-9]{1,20}")  # coin search: `add sol`, `add solana`
 STALE_AFTER = 10  # seconds without any feed frame before the status line shows STALE
 
 
@@ -60,7 +60,8 @@ def save_indicators(names):
 
 
 def parse_command(text: str) -> tuple[str, str | list[str] | None]:
-    """`add SOL-USD` -> ("add", "SOL-USD"), `ind rsi` -> ("ind", ["rsi"]), `quit` -> ("quit", None).
+    """`add SOL-USD` -> ("add", "SOL-USD"), `add sol` -> ("find", "SOL"), `ind rsi` -> ("ind", ["rsi"]),
+    `quit` -> ("quit", None).
 
     Raises ValueError with a user-facing message.
     """
@@ -74,9 +75,11 @@ def parse_command(text: str) -> tuple[str, str | list[str] | None]:
         if len(args) != 1:
             raise ValueError(f"usage: {cmd} BASE-QUOTE, e.g. {cmd} SOL-USD")
         symbol = args[0].upper()
-        if not SYMBOL_RE.fullmatch(symbol):
-            raise ValueError(f"not a pair: {args[0]} (expected e.g. SOL-USD)")
-        return cmd, symbol
+        if SYMBOL_RE.fullmatch(symbol):
+            return cmd, symbol
+        if cmd == "add" and QUERY_RE.fullmatch(symbol):
+            return "find", symbol
+        raise ValueError(f"not a pair: {args[0]} (expected e.g. SOL-USD{', or a coin: add solana' if cmd == 'add' else ''})")
     if cmd == "ind":
         names = [a.lower() for a in args]
         if names == ["off"]:
@@ -120,6 +123,7 @@ class TerminalApp(App):
     def on_mount(self):
         self.symbols = load_watchlist()
         self.http = httpx.AsyncClient()
+        self.products = None  # online Coinbase pairs, loaded once at startup for `add` search
         self.feed: Feed | None = None
         self.feed_status = "idle"
         self.last_tick = 0.0
@@ -130,6 +134,7 @@ class TerminalApp(App):
         table.focus()
         self.query_one(ChartPane).set_indicators(load_indicators())
         self.restart_feed()
+        self.load_products()
         self.set_interval(1, self.refresh_status)
         self.refresh_status()
 
@@ -169,6 +174,13 @@ class TerminalApp(App):
         age = f"{now - self.last_tick:.0f}s ago" if self.last_tick else "—"
         clock = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
         self.query_one("#status", Static).update(f"● {state}  │  last tick {age}  │  {clock}")
+
+    @work(exclusive=True, group="products")
+    async def load_products(self):
+        try:
+            self.products = await fetch_products(self.http)
+        except (httpx.HTTPError, ValueError):
+            pass  # `add` falls back to a per-pair lookup; search stays unavailable
 
     # ── chart ──
 
@@ -220,6 +232,8 @@ class TerminalApp(App):
             self.exit()
         elif cmd == "add":
             self.add_symbol(arg)
+        elif cmd == "find":
+            self.find_pair(arg)
         elif cmd == "ind":
             chart = self.query_one(ChartPane)
             chart.set_indicators(chart.indicators ^ set(arg) if arg else ())  # toggle
@@ -236,7 +250,8 @@ class TerminalApp(App):
             self.notify(f"{symbol} is already on the watchlist")
             return
         try:
-            exists = await product_exists(self.http, symbol)
+            exists = (any(p.id == symbol for p in self.products) if self.products
+                      else await product_exists(self.http, symbol))
         except httpx.HTTPError as e:
             self.notify(f"could not check {symbol} with Coinbase ({type(e).__name__})", severity="error")
             return
@@ -245,6 +260,17 @@ class TerminalApp(App):
         elif symbol not in self.symbols:  # re-check: a second `add` may have landed while we awaited
             self.symbols.append(symbol)
             self.watchlist_changed()
+
+    def find_pair(self, query: str):
+        if not self.products:
+            self.notify("coin search unavailable (Coinbase product list not loaded): add an exact pair, e.g. add SOL-USD",
+                        severity="error")
+            return
+        matches = search_products(self.products, query)
+        if not matches:
+            self.notify(f"no matches for {query}", severity="error")
+        else:
+            self.push_screen(PairPicker(query, matches), lambda symbol: symbol and self.add_symbol(symbol))
 
     def watchlist_changed(self):
         save_watchlist(self.symbols)

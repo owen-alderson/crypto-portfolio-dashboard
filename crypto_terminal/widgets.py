@@ -1,17 +1,21 @@
+import math
 import time
 from collections import deque
 from datetime import datetime, timezone
 
 from rich.text import Text
-from textual.widgets import DataTable
+from textual.screen import ModalScreen
+from textual.widgets import DataTable, OptionList
+from textual.widgets.option_list import Option
 from textual_plotext import PlotextPlot
 
 from .feed import Tick
-from .history import Candle, apply_tick
+from .history import Candle, Product, apply_tick
 from .indicators import ema, rsi, sma, vwap
 
 SPARK = "▁▂▃▄▅▆▇█"
 SPARK_LEN = 20
+SIG_FIGS = 5
 FLASH_SECONDS = 0.5
 UP, DOWN = "green", "red"
 REDRAW_EVERY = 0.5  # live candle redraws at most twice a second
@@ -28,7 +32,11 @@ INDICATORS = (*OVERLAYS, "rsi")
 
 
 def fmt_price(value: float) -> str:
-    return f"{value:,.2f}" if value >= 1_000 else f"{value:.4f}"
+    """2 decimals from 1,000 up, otherwise enough decimals for SIG_FIGS significant figures (0.0021300)."""
+    if value >= 1_000:
+        return f"{value:,.2f}"
+    decimals = max(2, SIG_FIGS - 1 - math.floor(math.log10(value))) if value > 0 else 2
+    return f"{value:.{decimals}f}"
 
 
 def visible(times: list[float], series: list[float | None]) -> tuple[list, list]:
@@ -94,6 +102,29 @@ class PriceTable(DataTable):
         color = self._dir.get(sym, "white")
         style = f"bold black on {color}" if sym in self._flashing else f"bold {color}"
         self.update_cell(sym, "last", Text(fmt_price(self._last[sym].price), style=style, justify="right"))
+
+
+class PairPicker(ModalScreen[str | None]):
+    """Search results for `add <coin>`: enter adds the highlighted pair, esc cancels."""
+
+    BINDINGS = [("escape", "dismiss", "Cancel")]
+    DEFAULT_CSS = """
+    PairPicker { align: center middle; }
+    PairPicker > OptionList { width: 50; height: auto; max-height: 20; background: black; border: solid #ffb000; }
+    """
+
+    def __init__(self, query: str, products: list[Product]):
+        super().__init__()
+        self.term, self.products = query, products
+
+    def compose(self):
+        # Text, not str: coin names are server data and must never be parsed as markup
+        picker = OptionList(*(Option(Text(f"{p.id:<14}{p.name}"), id=p.id) for p in self.products))
+        picker.border_title = f"add {self.term.lower()} · enter adds · esc cancels"
+        yield picker
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected):
+        self.dismiss(event.option.id)
 
 
 class ChartPane(PlotextPlot):
