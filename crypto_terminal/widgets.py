@@ -12,12 +12,13 @@ from textual_plotext import PlotextPlot
 from .feed import Tick
 from .history import Candle, Product, apply_tick
 from .indicators import ema, rsi, sma, vwap
+from .theme import GREEN, RED
 
 SPARK = "▁▂▃▄▅▆▇█"
 SPARK_LEN = 20
 SIG_FIGS = 5
 FLASH_SECONDS = 0.5
-UP, DOWN = "green", "red"
+UP, DOWN = GREEN, RED
 # TradingView palette: candle up/down, and volume bars at roughly half strength
 CANDLE_UP, CANDLE_DOWN = (8, 153, 129), (242, 54, 69)
 VOL_UP, VOL_DOWN = (11, 86, 79), (129, 40, 51)

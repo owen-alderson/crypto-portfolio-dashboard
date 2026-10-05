@@ -10,6 +10,7 @@ from crypto_terminal import app as app_module
 from crypto_terminal.app import TerminalApp
 from crypto_terminal.feed import Tick
 from crypto_terminal.history import Candle, Product
+from crypto_terminal.theme import GREEN
 from crypto_terminal.widgets import ChartPane, PairPicker, PriceTable
 
 PRODUCTS = [Product(f"{base}-{quote}", base, quote, name) for base, name in
@@ -78,10 +79,10 @@ async def test_ticks_update_table(offline):
         feed.on_tick(Tick("BTC-USD", 101.0, 90.0))
         table = app.query_one(PriceTable)
         last = table.get_cell("BTC-USD", "last")
-        assert last.plain == "101.00" and "green" in str(last.style)
+        assert last.plain == "101.00" and GREEN in str(last.style)
         assert table.get_cell("BTC-USD", "chg").plain == "▲ +12.22%"
         await pilot.pause(0.7)  # flash wears off, colour stays
-        assert "on green" not in str(table.get_cell("BTC-USD", "last").style)
+        assert f"on {GREEN}" not in str(table.get_cell("BTC-USD", "last").style)
 
 
 async def test_add_remove_persist(offline):
