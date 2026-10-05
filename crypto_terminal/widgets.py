@@ -18,6 +18,10 @@ SPARK_LEN = 20
 SIG_FIGS = 5
 FLASH_SECONDS = 0.5
 UP, DOWN = "green", "red"
+# TradingView palette: candle up/down, and volume bars at roughly half strength
+CANDLE_UP, CANDLE_DOWN = (8, 153, 129), (242, 54, 69)
+VOL_UP, VOL_DOWN = (11, 86, 79), (129, 40, 51)
+CANDLE_COLUMNS = 2.2
 REDRAW_EVERY = 0.5  # live candle redraws at most twice a second
 VOLUME_ROWS = 7
 RSI_ROWS = 8
@@ -174,8 +178,8 @@ class ChartPane(PlotextPlot):
 
     def _draw(self):
         self._dirty = False
-        # one terminal column per candle: draw the tail that fits; indicators see the full history
-        shown = self.candles[-max(10, self.size.width - 12):]
+        # a bit over two columns per candle, so after rounding neighbours never touch; indicators see the full history
+        shown = self.candles[-max(10, int((self.size.width - 12) / CANDLE_COLUMNS)):]
         times = [c.t for c in shown]
         lines = [(legend, color, visible(times, series(self.candles)))
                  for name, (legend, color, series) in OVERLAYS.items() if name in self.indicators]
@@ -186,11 +190,12 @@ class ChartPane(PlotextPlot):
         plt.subplots(panels, 1)
 
         top = plt.subplot(1, 1)
-        top.candlestick(times, {"Open": [c.o for c in shown], "Close": [c.c for c in shown],
-                                "High": [c.h for c in shown], "Low": [c.l for c in shown]})
-        for legend, color, (xs, ys) in lines:
+        for legend, color, (xs, ys) in lines:  # overlays first: one glyph per cell, so candles drawn after stay whole
             if xs:
                 top.plot(xs, ys, color=color, marker="braille", label=legend)
+        top.candlestick(times, {"Open": [c.o for c in shown], "Close": [c.c for c in shown],
+                                "High": [c.h for c in shown], "Low": [c.l for c in shown]},
+                         colors=[CANDLE_UP, CANDLE_DOWN])
         top.title(f"{self.symbol} · {self.label} · {fmt_price(shown[-1].c)} (UTC)")
         # our own y labels, padded to one width, so every panel's x axis lines up under the candles
         overlay_values = [y for _, _, (_, ys) in lines for y in ys]
@@ -202,7 +207,10 @@ class ChartPane(PlotextPlot):
         vol = plt.subplot(2, 1)
         vol.plotsize(None, VOLUME_ROWS)
         vmax = max(c.v for c in shown)
-        vol.bar(times, [c.v for c in shown], color="blue", width=0.5)
+        for color, up in ((VOL_UP, True), (VOL_DOWN, False)):  # same up/down rule as plotext's candles
+            side = [c for c in shown if (c.c > c.o) == up]
+            if side:  # near-zero width: plotext still fills the one column under each candle
+                vol.bar([c.t for c in side], [c.v for c in side], color=color, width=0.01)
         vol.yticks([0, vmax], ["0".rjust(width), fmt_price(vmax).rjust(width)])
 
         if show_rsi:
@@ -220,7 +228,7 @@ class ChartPane(PlotextPlot):
         ticks = times[:: max(1, len(times) // 5)]
         for row in range(1, panels + 1):
             panel = plt.subplot(row, 1)
-            panel.xlim(times[0], times[-1])
+            panel.xlim(times[0] - self.granularity / 2, times[-1] + self.granularity / 2)  # each candle centred in its slot
             if row < panels:
                 panel.xticks([])
         # numeric x + our own tick labels: plotext's date parsing loses the day for "H:M" and wraps at midnight
