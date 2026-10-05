@@ -1,31 +1,24 @@
-import math
 import time
 from collections import deque
-from datetime import datetime, timezone
 
 from rich.text import Text
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import DataTable, OptionList
 from textual.widgets.option_list import Option
-from textual_plotext import PlotextPlot
 
+from . import chart
+from .chart import fmt_price
 from .feed import Tick
 from .history import Candle, Product, apply_tick
-from .indicators import ema, rsi, sma, vwap
+from .indicators import ema, sma, vwap
 from .theme import GREEN, RED
 
 SPARK = "▁▂▃▄▅▆▇█"
 SPARK_LEN = 20
-SIG_FIGS = 5
 FLASH_SECONDS = 0.5
 UP, DOWN = GREEN, RED
-# TradingView palette: candle up/down, and volume bars at roughly half strength
-CANDLE_UP, CANDLE_DOWN = (8, 153, 129), (242, 54, 69)
-VOL_UP, VOL_DOWN = (11, 86, 79), (129, 40, 51)
-CANDLE_COLUMNS = 2.2
-REDRAW_EVERY = 0.5  # live candle redraws at most twice a second
-VOLUME_ROWS = 7
-RSI_ROWS = 8
+REDRAW_EVERY = 0.25  # live candle redraws at most four times a second
 
 # name -> (legend, colour, series over all candles); RSI gets its own panel
 OVERLAYS = {
@@ -34,20 +27,6 @@ OVERLAYS = {
     "vwap": ("VWAP", "magenta", vwap),
 }
 INDICATORS = (*OVERLAYS, "rsi")
-
-
-def fmt_price(value: float) -> str:
-    """2 decimals from 1,000 up, otherwise enough decimals for SIG_FIGS significant figures (0.0021300)."""
-    if value >= 1_000:
-        return f"{value:,.2f}"
-    decimals = max(2, SIG_FIGS - 1 - math.floor(math.log10(value))) if value > 0 else 2
-    return f"{value:.{decimals}f}"
-
-
-def visible(times: list[float], series: list[float | None]) -> tuple[list, list]:
-    """Tail of `series` lined up with `times`, minus the None warm-up."""
-    pts = [(t, v) for t, v in zip(times, series[-len(times):]) if v is not None]
-    return [t for t, _ in pts], [v for _, v in pts]
 
 
 def sparkline(values) -> str:
@@ -140,26 +119,25 @@ class PairPicker(ModalScreen[str | None]):
         self.dismiss(event.option.id)
 
 
-class ChartPane(PlotextPlot):
+class ChartPane(Widget):
     """Candles for one pair; the last candle follows live ticks via `update_price`."""
 
+    DEFAULT_CSS = "ChartPane { width: 1fr; height: 1fr; }"
+
     def on_mount(self):
-        self.theme = "dark"
-        self.symbol, self.candles, self.indicators, self._dirty = None, [], set(), False
+        self.symbol, self.candles, self.indicators, self._dirty, self.slot = None, [], set(), False, 2
         self.set_interval(REDRAW_EVERY, self._redraw_if_dirty)
         self.show_message("select a pair")
 
     def show_message(self, text: str):
-        self.candles = []  # stop live updates until the next `show`
-        self.plt.clear_figure()
-        self.plt.title(text)
+        self.candles, self.message = [], text  # stop live updates until the next `show`
         self.refresh()
 
     def show(self, symbol: str, label: str, granularity: int, candles: list[Candle]):
         if not candles:
             return self.show_message(f"{symbol} {label}: no data")
-        self.symbol, self.label, self.granularity, self.candles = symbol, label, granularity, candles
-        self._draw()
+        self.symbol, self.granularity, self.candles = symbol, granularity, candles
+        self.refresh()
 
     def set_indicators(self, names):
         self.indicators = set(names)
@@ -170,68 +148,16 @@ class ChartPane(PlotextPlot):
             apply_tick(self.candles, price, time.time(), self.granularity)
             self._dirty = True
 
-    def on_resize(self):
-        self._dirty = bool(self.candles)  # visible candle count depends on width
-
     def _redraw_if_dirty(self):
-        if self._dirty and self.candles:
-            self._draw()
+        if self._dirty:
+            self._dirty = False
+            self.refresh()
 
-    def _draw(self):
-        self._dirty = False
-        # a bit over two columns per candle, so after rounding neighbours never touch; indicators see the full history
-        shown = self.candles[-max(10, int((self.size.width - 12) / CANDLE_COLUMNS)):]
-        times = [c.t for c in shown]
-        lines = [(legend, color, visible(times, series(self.candles)))
-                 for name, (legend, color, series) in OVERLAYS.items() if name in self.indicators]
-        show_rsi = "rsi" in self.indicators
-        panels = 3 if show_rsi else 2
-        plt = self.plt
-        plt.clear_figure()
-        plt.subplots(panels, 1)
-
-        top = plt.subplot(1, 1)
-        for legend, color, (xs, ys) in lines:  # overlays first: one glyph per cell, so candles drawn after stay whole
-            if xs:
-                top.plot(xs, ys, color=color, marker="braille", label=legend)
-        top.candlestick(times, {"Open": [c.o for c in shown], "Close": [c.c for c in shown],
-                                "High": [c.h for c in shown], "Low": [c.l for c in shown]},
-                         colors=[CANDLE_UP, CANDLE_DOWN])
-        top.title(f"{self.symbol} · {self.label} · {fmt_price(shown[-1].c)} (UTC)")
-        # our own y labels, padded to one width, so every panel's x axis lines up under the candles
-        overlay_values = [y for _, _, (_, ys) in lines for y in ys]
-        lo, hi = min([c.l for c in shown] + overlay_values), max([c.h for c in shown] + overlay_values)
-        ys = [lo + (hi - lo) * i / 4 for i in range(5)]
-        width = max(len(fmt_price(y)) for y in ys)
-        top.yticks(ys, [fmt_price(y).rjust(width) for y in ys])
-
-        vol = plt.subplot(2, 1)
-        vol.plotsize(None, VOLUME_ROWS)
-        vmax = max(c.v for c in shown)
-        for color, up in ((VOL_UP, True), (VOL_DOWN, False)):  # same up/down rule as plotext's candles
-            side = [c for c in shown if (c.c > c.o) == up]
-            if side:  # near-zero width: plotext still fills the one column under each candle
-                vol.bar([c.t for c in side], [c.v for c in side], color=color, width=0.01)
-        vol.yticks([0, vmax], ["0".rjust(width), fmt_price(vmax).rjust(width)])
-
-        if show_rsi:
-            panel = plt.subplot(3, 1)
-            panel.plotsize(None, RSI_ROWS)
-            xs, ys = visible(times, rsi([c.c for c in self.candles]))
-            if xs:
-                panel.plot(xs, ys, color="orange", marker="braille", label="RSI 14")
-            panel.hline(70, "gray")
-            panel.hline(30, "gray")
-            panel.ylim(0, 100)
-            panel.yticks([30, 70], ["30".rjust(width), "70".rjust(width)])
-
-        fmt = "%d/%m" if self.granularity >= 3600 else "%H:%M"
-        ticks = times[:: max(1, len(times) // 5)]
-        for row in range(1, panels + 1):
-            panel = plt.subplot(row, 1)
-            panel.xlim(times[0] - self.granularity / 2, times[-1] + self.granularity / 2)  # each candle centred in its slot
-            if row < panels:
-                panel.xticks([])
-        # numeric x + our own tick labels: plotext's date parsing loses the day for "H:M" and wraps at midnight
-        panel.xticks(ticks, [datetime.fromtimestamp(t, timezone.utc).strftime(fmt) for t in ticks])
-        self.refresh()
+    def render(self):
+        if not self.candles:
+            return Text(self.message)
+        # indicators see the full history, not just the candles in view
+        overlays = [(legend, colour, series(self.candles))
+                    for name, (legend, colour, series) in OVERLAYS.items() if name in self.indicators]
+        return Text("\n").join(chart.render(self.candles, self.granularity, self.size.width, self.size.height,
+                                            self.slot, overlays, "rsi" in self.indicators))
