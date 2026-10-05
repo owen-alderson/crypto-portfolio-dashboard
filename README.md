@@ -20,7 +20,7 @@ Or `pip install crypto-terminal` into any virtualenv.
 ## Features
 
 - **Live watchlist**: last price, 24h change, and a sparkline of recent ticks. Prices flash green/red on every up/down tick.
-- **Candlestick chart** for the highlighted pair, with volume underneath. Six timeframes (1m to 1d candles) in a strip above the chart, three zoom levels and a full-width mode. The last candle follows the live price and a new one opens at each candle boundary. Prices are drawn to half a character row, the highest high and lowest low fill the panel exactly, and each axis label is the exact price of its grid line. Missing candles leave a gap rather than squashing time. A dashed line and tag mark the last price.
+- **Candlestick chart** for the highlighted pair, with volume underneath. Six timeframes (1m to 1d candles) in a strip above the chart, three zoom levels, and `f` to switch between split, chart-only and watchlist-only views. The last candle follows the live price and a new one opens at each candle boundary. Wick tips (highs and lows) are drawn to half a character row and bodies are solid whole rows, so candles never break in any terminal; the highest high and lowest low fill the panel exactly, and each axis label is the exact price of its grid line. Missing candles leave a gap rather than squashing time. A dashed line and tag mark the last price.
 - **Indicators**: SMA 20, EMA 50 and VWAP (resets at the UTC day) over the candles, RSI 14 in its own panel.
 - **Coin search**: `add solana` lists every online Solana pair (USD, USDC, USDT, EUR, GBP and BTC quotes first). Exact pairs like `add SOL-BTC` add directly. Sub-cent and BTC-quoted prices keep 5 significant figures.
 - **Price alerts**: on a level (`>` / `<`) or a percentage move. A firing alert rings the terminal bell, shows a toast, and sends a desktop notification (macOS, or Linux with `notify-send`). Pairs with an alert carry a 🔔.
@@ -47,7 +47,7 @@ Coinbase pushes an update on every trade (bursts are batched); nothing is polled
 | `1` – `6` | Candles: 1m, 5m, 15m, 1h, 6h, 1d |
 | `[` `]` | Shorter / longer candles |
 | `+` `-` | Zoom: 4, 2 or 1 columns per candle |
-| `f` | Full-width chart (hides the watchlist) |
+| `f` | Cycle the view: split → chart only → watchlist only |
 | `/` or `:` | Open command bar (`esc` closes it) |
 | `ctrl+q` | Quit |
 
