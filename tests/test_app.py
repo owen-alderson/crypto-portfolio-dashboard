@@ -291,7 +291,7 @@ async def test_bracket_keys_step_timeframe_and_clamp(offline):
         assert highlighted == [" 6h "]
 
 
-async def test_zoom_redraws_without_fetching_and_f_gives_full_width(offline, monkeypatch):
+async def test_zoom_redraws_without_fetching_and_f_cycles_views(offline, monkeypatch):
     fetches = []
 
     async def many_candles(client, symbol, granularity):
@@ -318,9 +318,14 @@ async def test_zoom_redraws_without_fetching_and_f_gives_full_width(offline, mon
         assert counts[4] < counts[2] < counts[1] and len(fetches) == 1
         assert "zoom ×1" in str(app.query_one("#bar").render())
 
-        await pilot.press("f")
+        column = app.query_one("#chart-col")
+        await pilot.press("f")  # chart only: the chart gets the whole width
         await pilot.pause()
-        assert not table.display and visible() > counts[1]
-        await pilot.press("f")
+        assert not table.display and column.display and visible() > counts[1]
+        await pilot.press("f")  # watchlist only, stretched across the screen
         await pilot.pause()
-        assert table.display and visible() == counts[1] and len(fetches) == 1
+        assert table.display and not column.display and table.outer_size.width == 150
+        await pilot.press("f")  # back to split
+        await pilot.pause()
+        assert table.display and column.display and table.outer_size.width == 65
+        assert visible() == counts[1] and len(fetches) == 1

@@ -28,6 +28,7 @@ DEFAULT_WATCHLIST = ["BTC-USD", "ETH-USD", "XRP-USD", "SOL-USD", "ADA-USD"]
 QUERY_RE = re.compile(r"[A-Z0-9]{1,20}")  # coin search: `add sol`, `add solana`
 STALE_AFTER = 10  # seconds without any feed frame before the status line shows STALE
 ZOOMS = (1, 2, 4)  # chart columns per candle
+VIEWS = ("split", "chart", "watchlist")  # `f` cycles through these
 
 
 # ── Watchlist, config + commands ──────────────────────────────────────────────
@@ -151,6 +152,7 @@ class TerminalApp(App):
     #main { height: 1fr; }
     #bar { height: 1; color: #ffb000; }
     PriceTable { width: 65; height: 1fr; background: black; border-right: solid #ffb000; }
+    PriceTable.alone { width: 1fr; border-right: none; }
     PriceTable > .datatable--header { background: black; color: #ffb000; text-style: bold; }
     PriceTable > .datatable--cursor { background: #3a2a00; }
     #cmd { display: none; background: black; border: solid #ffb000; }
@@ -165,15 +167,15 @@ class TerminalApp(App):
         ("right_square_bracket", "step_timeframe(1)", "Longer candles"),
         ("plus,equals_sign", "zoom(1)", "Zoom in"),
         ("minus", "zoom(-1)", "Zoom out"),
-        ("f", "full_width", "Full-width chart"),
+        ("f", "cycle_view", "Split / chart / watchlist"),
     ]
 
     def compose(self) -> ComposeResult:
-        yield Static("CRYPTO TERMINAL · COINBASE SPOT · [1-6] or [ ] timeframe · [+ -] zoom · [f] full width · "
+        yield Static("CRYPTO TERMINAL · COINBASE SPOT · [1-6] or [ ] timeframe · [+ -] zoom · [f] view · "
                      "[/] command", id="title", markup=False)
         with Horizontal(id="main"):
             yield PriceTable(id="watchlist")
-            with Vertical():
+            with Vertical(id="chart-col"):
                 yield Static(id="bar", markup=False)
                 yield ChartPane(id="chart")
         yield Input(placeholder="add SOL-USD · add solana · rm ADA-USD · ind sma20 ema50 vwap rsi · ind off · "
@@ -189,6 +191,7 @@ class TerminalApp(App):
         self.last_tick = 0.0
         self.selected: str | None = None
         self.timeframe = "1"
+        self.view = "split"
         table = self.query_one(PriceTable)
         table.set_symbols(self.symbols)
         table.focus()
@@ -279,9 +282,13 @@ class TerminalApp(App):
         chart.refresh()
         self.refresh_bar()
 
-    def action_full_width(self):
+    def action_cycle_view(self):
+        """split -> chart only -> watchlist only -> split; whatever stays visible takes the full width."""
+        self.view = VIEWS[(VIEWS.index(self.view) + 1) % len(VIEWS)]
         table = self.query_one(PriceTable)
-        table.display = not table.display  # the chart re-renders at its new width
+        table.display = self.view != "chart"
+        table.set_class(self.view == "watchlist", "alone")
+        self.query_one("#chart-col").display = self.view != "watchlist"
 
     def refresh_bar(self):
         bar = Text(f" {self.selected or '—'} │ ")
