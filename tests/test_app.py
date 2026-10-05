@@ -271,3 +271,55 @@ async def test_alerts_list_unalert_and_persist(offline):
         await pilot.pause()
         assert app2.alerts == app.alerts
         assert app2.query_one(PriceTable).get_cell("ETH-USD", "sym").plain == "ETH-USD 🔔"
+
+
+async def test_bracket_keys_step_timeframe_and_clamp(offline):
+    app = TerminalApp()
+    async with app.run_test(size=(150, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("left_square_bracket")  # already the shortest
+        assert app.timeframe == "1"
+        await pilot.press("right_square_bracket", "right_square_bracket")
+        assert app.timeframe == "3"
+        await pilot.press("6", "right_square_bracket")  # already the longest
+        assert app.timeframe == "6"
+        await pilot.press("left_square_bracket")
+        assert app.timeframe == "5"
+        bar = app.query_one("#bar").render()
+        assert str(bar).startswith(" BTC-USD │  1m  5m  15m  1h  6h  1d  │ zoom ×2")
+        highlighted = [str(bar)[s.start:s.end] for s in bar.spans if "on" in str(s.style)]
+        assert highlighted == [" 6h "]
+
+
+async def test_zoom_redraws_without_fetching_and_f_gives_full_width(offline, monkeypatch):
+    fetches = []
+
+    async def many_candles(client, symbol, granularity):
+        fetches.append(granularity)
+        now = time.time()
+        start = now - now % granularity - 299 * granularity
+        return [Candle(start + i * granularity, 100.0 + i, 101.0 + i, 99.0 + i, 100.5 + i, 3.0) for i in range(300)]
+
+    monkeypatch.setattr(app_module, "fetch_candles", many_candles)
+    app = TerminalApp()
+    async with app.run_test(size=(150, 40)) as pilot:
+        await pilot.pause(0.3)
+        chart, table = app.query_one(ChartPane), app.query_one(PriceTable)
+
+        def visible():  # candles in view = full-height volume bars on the bottom volume row
+            return str(chart.render()).split("\n")[-2].count("█") // max(1, chart.slot - 1)
+
+        counts = {}
+        for key, slot in (("plus", 4), ("equals_sign", 4), ("minus", 2), ("minus", 1), ("minus", 1)):
+            await pilot.press(key)
+            assert chart.slot == slot
+            counts[slot] = visible()
+        assert counts[4] < counts[2] < counts[1] and len(fetches) == 1
+        assert "zoom ×1" in str(app.query_one("#bar").render())
+
+        await pilot.press("f")
+        await pilot.pause()
+        assert not table.display and visible() > counts[1]
+        await pilot.press("f")
+        await pilot.pause()
+        assert table.display and visible() == counts[1] and len(fetches) == 1

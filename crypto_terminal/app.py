@@ -7,15 +7,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.widgets import Input, Static
 
 from .alerts import KINDS, Alert, desktop_notify, valid_alert, valid_level
 from .alerts import check as check_alerts
 from .feed import Feed, Tick
 from .history import GRANULARITIES, SYMBOL_RE, fetch_candles, fetch_products, product_exists, search_products
+from .theme import AMBER
 from .widgets import INDICATORS, ChartPane, PairPicker, PriceTable, fmt_price
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "crypto-terminal"
@@ -25,6 +27,7 @@ ALERTS_FILE = CONFIG_DIR / "alerts.json"
 DEFAULT_WATCHLIST = ["BTC-USD", "ETH-USD", "XRP-USD", "SOL-USD", "ADA-USD"]
 QUERY_RE = re.compile(r"[A-Z0-9]{1,20}")  # coin search: `add sol`, `add solana`
 STALE_AFTER = 10  # seconds without any feed frame before the status line shows STALE
+ZOOMS = (1, 2, 4)  # chart columns per candle
 
 
 # ── Watchlist, config + commands ──────────────────────────────────────────────
@@ -146,6 +149,7 @@ class TerminalApp(App):
     Screen { background: black; }
     #title { height: 1; padding: 0 1; background: #ffb000; color: black; text-style: bold; }
     #main { height: 1fr; }
+    #bar { height: 1; color: #ffb000; }
     PriceTable { width: 65; height: 1fr; background: black; border-right: solid #ffb000; }
     PriceTable > .datatable--header { background: black; color: #ffb000; text-style: bold; }
     PriceTable > .datatable--cursor { background: #3a2a00; }
@@ -157,13 +161,21 @@ class TerminalApp(App):
         ("colon", "command", "Command"),
         ("escape", "close_command", "Close command bar"),
         *((key, f"timeframe('{key}')", label) for key, (label, _) in GRANULARITIES.items()),
+        ("left_square_bracket", "step_timeframe(-1)", "Shorter candles"),
+        ("right_square_bracket", "step_timeframe(1)", "Longer candles"),
+        ("plus,equals_sign", "zoom(1)", "Zoom in"),
+        ("minus", "zoom(-1)", "Zoom out"),
+        ("f", "full_width", "Full-width chart"),
     ]
 
     def compose(self) -> ComposeResult:
-        yield Static("CRYPTO TERMINAL · COINBASE SPOT · [1-6] 1m 5m 15m 1h 6h 1d · [/] command", id="title", markup=False)
+        yield Static("CRYPTO TERMINAL · COINBASE SPOT · [1-6] or [ ] timeframe · [+ -] zoom · [f] full width · "
+                     "[/] command", id="title", markup=False)
         with Horizontal(id="main"):
             yield PriceTable(id="watchlist")
-            yield ChartPane(id="chart")
+            with Vertical():
+                yield Static(id="bar", markup=False)
+                yield ChartPane(id="chart")
         yield Input(placeholder="add SOL-USD · add solana · rm ADA-USD · ind sma20 ema50 vwap rsi · ind off · "
                                 "alert BTC-USD > 90000 · alerts · unalert 1 · quit   (esc closes)", id="cmd")
         yield Static(id="status", markup=False)  # status carries server text: never parse it as markup
@@ -183,6 +195,7 @@ class TerminalApp(App):
         self.query_one(ChartPane).set_indicators(load_indicators())
         self.alerts = load_alerts()
         table.set_alerts({a.symbol for a in self.alerts})
+        self.refresh_bar()
         self.restart_feed()
         self.load_products()
         self.set_interval(1, self.refresh_status)
@@ -245,11 +258,37 @@ class TerminalApp(App):
 
     def on_data_table_row_highlighted(self, event: PriceTable.RowHighlighted):
         self.selected = event.row_key.value
+        self.refresh_bar()
         self.load_chart()
 
     def action_timeframe(self, key: str):
         self.timeframe = key
+        self.refresh_bar()
         self.load_chart()
+
+    def action_step_timeframe(self, step: int):
+        keys = list(GRANULARITIES)
+        key = keys[min(max(keys.index(self.timeframe) + step, 0), len(keys) - 1)]
+        if key != self.timeframe:  # clamped at 1m and 1d
+            self.action_timeframe(key)
+
+    def action_zoom(self, step: int):
+        # redraws the candles already fetched: no request, so never more than history.MAX_CANDLES
+        chart = self.query_one(ChartPane)
+        chart.slot = ZOOMS[min(max(ZOOMS.index(chart.slot) + step, 0), len(ZOOMS) - 1)]
+        chart.refresh()
+        self.refresh_bar()
+
+    def action_full_width(self):
+        table = self.query_one(PriceTable)
+        table.display = not table.display  # the chart re-renders at its new width
+
+    def refresh_bar(self):
+        bar = Text(f" {self.selected or '—'} │ ")
+        for key, (label, _) in GRANULARITIES.items():
+            bar.append(f" {label} ", style=f"bold black on {AMBER}" if key == self.timeframe else "")
+        bar.append(f" │ zoom ×{self.query_one(ChartPane).slot} ")
+        self.query_one("#bar", Static).update(bar)
 
     @work(exclusive=True, group="chart")
     async def load_chart(self):
