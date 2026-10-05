@@ -70,7 +70,7 @@ def test_scale_has_no_padding_and_ignores_out_of_range_overlays():
     wild = render([A, DOJI], 60, 13, ROWS + FIXED + 1, 2, overlays=[("X", "yellow", [500.0, 1.0])])
     assert [line.plain for line in plain] == [line.plain for line in wild]
     inside = render([A, DOJI], 60, 13, ROWS + FIXED + 1, 2, overlays=[("X", "yellow", [None, 108.0])])
-    assert inside[1 + 0].plain[2:4] == "⣀⣀"  # 108 = k1: bottom half of the first price row, across the slot
+    assert inside[1 + 0].plain[2:4] == "⣤⣤"  # 108 = k1: bottom half of the first price row, across the slot
 
 
 def test_axis_labels_are_the_exact_price_of_their_line():
@@ -167,7 +167,9 @@ def test_rsi_guides_sit_exactly_on_70_and_30():
 def test_nice_ticks():
     assert nice_ticks(100, 109, 4) == [100, 102.5, 105, 107.5]
     assert nice_ticks(5, 5, 4) == [5]
-    assert all(len(nice_ticks(0, x, 5)) <= 6 for x in (0.001, 1, 7, 13, 999, 86_000))
+    for lo, hi in ((0, 0.001), (3, 4), (0, 7), (85_350, 86_870), (85_000, 85_000.5), (74_000, 89_500)):
+        ticks = nice_ticks(lo, hi, 4)
+        assert 4 <= len(ticks) <= 7 and all(lo <= t <= hi for t in ticks)
 
 
 def test_any_size_renders_without_crashing():

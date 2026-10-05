@@ -14,9 +14,9 @@ SIG_FIGS = 5
 VOLUME_ROWS = 7
 RSI_ROWS = 8  # 15 half-row steps: RSI 70 and 30 fall exactly on the middle of rows 2 and 5
 MIN_PRICE_ROWS = 3
-MAX_TICKS = 5
+MIN_TICKS = 4
 BLOCKS = " ▁▂▃▄▅▆▇█"
-DOTS = ("⠉", "⣀")  # a point in the top / bottom half of a cell
+DOTS = ("⠛", "⣤")  # a point filling the top / bottom half of a cell
 # (top half, bottom half) of a cell -> glyph; "b" body, "w" wick. Body wins a cell it shares with wick.
 GLYPHS = {("w", "w"): "│", ("w", ""): "╵", ("", "w"): "╷", ("b", "b"): "█", ("b", ""): "▀", ("", "b"): "▄",
           ("b", "w"): "▀", ("w", "b"): "▄"}
@@ -42,13 +42,16 @@ def row_price(row: int, hi: float, lo: float, rows: int) -> float:
     return hi if hi == lo else hi - (2 * row + 0.5) * (hi - lo) / (2 * rows - 1)
 
 
-def nice_ticks(lo: float, hi: float, most: int) -> list[float]:
-    """Round prices 1, 2, 2.5 or 5 x 10^n apart inside [lo, hi]: at most most + 1 of them."""
+def nice_ticks(lo: float, hi: float, least: int) -> list[float]:
+    """Round prices inside [lo, hi], 1, 2, 2.5 or 5 x 10^n apart: the widest spacing giving at least `least`."""
     if hi == lo:
         return [lo]
-    mag = 10 ** math.floor(math.log10((hi - lo) / most))
-    step = next(m * mag for m in (1, 2, 2.5, 5, 10) if (hi - lo) / (m * mag) <= most)
-    return [i * step for i in range(math.ceil(lo / step), math.floor(hi / step) + 1)]
+    mag = 10 ** math.floor(math.log10(hi - lo))
+    for m in (5, 2.5, 2, 1, 0.5, 0.25, 0.2, 0.1):  # 0.1 * mag always gives 10 or more
+        ticks = [i * m * mag for i in range(math.ceil(lo / (m * mag)), math.floor(hi / (m * mag)) + 1)]
+        if len(ticks) >= least:
+            return ticks
+    return ticks
 
 
 def render(candles, granularity: int, width: int, height: int, slot: int, overlays=(), show_rsi=False) -> list[Text]:
@@ -113,7 +116,7 @@ def render(candles, granularity: int, width: int, height: int, slot: int, overla
     label_len = len(datetime.fromtimestamp(0, timezone.utc).strftime(fmt))
     shortest = 86400 if fmt == "%b %d" else granularity  # a date-only label every 12h would repeat itself
     step = next((t for t in TIME_STEPS if t >= shortest and t % granularity == 0
-                 and t // granularity * slot > label_len), None)
+                 and t // granularity * slot > label_len + 2), None)
     labels, end = [], -1
     for s in range(n if step else 0):
         t = last.t - (n - 1 - s) * granularity
@@ -126,7 +129,7 @@ def render(candles, granularity: int, width: int, height: int, slot: int, overla
     for x, _ in labels:
         for r in panels:
             put(r, x, "┆", GRID)
-    tick_rows = {y(v) // 2 for v in nice_ticks(lo, hi, max(1, min(MAX_TICKS, rows // 4)))}
+    tick_rows = {y(v) // 2 for v in nice_ticks(lo, hi, max(1, min(MIN_TICKS, rows // 4)))}
     for r in tick_rows:
         hline(top + r, "┄", GRID)
     hline(vol_top - 1, "─", GRID)

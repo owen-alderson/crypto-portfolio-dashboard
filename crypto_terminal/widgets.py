@@ -22,9 +22,9 @@ REDRAW_EVERY = 0.25  # live candle redraws at most four times a second
 
 # name -> (legend, colour, series over all candles); RSI gets its own panel
 OVERLAYS = {
-    "sma20": ("SMA 20", "yellow", lambda candles: sma([c.c for c in candles], 20)),
-    "ema50": ("EMA 50", "cyan", lambda candles: ema([c.c for c in candles], 50)),
-    "vwap": ("VWAP", "magenta", vwap),
+    "sma20": ("SMA 20", "#FFD600", lambda candles: sma([c.c for c in candles], 20)),
+    "ema50": ("EMA 50", "#00B8D4", lambda candles: ema([c.c for c in candles], 50)),
+    "vwap": ("VWAP", "#D500F9", vwap),
 }
 INDICATORS = (*OVERLAYS, "rsi")
 
