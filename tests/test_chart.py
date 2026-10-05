@@ -1,6 +1,8 @@
-"""The text chart renderer: glyphs on exact half-rows, slots from time, honest axis labels, any terminal size."""
+"""The text chart renderer: wick tips on exact half-rows, solid whole-row bodies, slots from time, honest axis
+labels, any terminal size."""
 
 import random
+import re
 import time
 from datetime import datetime, timezone
 
@@ -22,9 +24,14 @@ def cells(line):
     return list(zip(line.plain, styles))
 
 
+def filled(line):
+    """Columns painted as solid background (candle bodies, full volume cells)."""
+    return [style.startswith("on ") for _, style in cells(line)]
+
+
 def column(lines, x, rows):
-    """Characters down column x, grid and last-price line blanked."""
-    return "".join(lines[r].plain[x] for r in rows).translate(str.maketrans("┄┆╌─", "    "))
+    """Characters down column x: "B" for a solid body cell, grid and last-price line blanked."""
+    return "".join("B" if filled(lines[r])[x] else lines[r].plain[x] for r in rows).translate(str.maketrans("┄┆╌─", "    "))
 
 
 def walk(n, granularity=60, seed=1, start=86_000.0):
@@ -47,20 +54,33 @@ def small_chart(candles=(A, DOJI), **kw):
     return render(list(candles), 60, 9 + 4, ROWS + FIXED, 2, **kw)  # axis 6 + 3 wide: 2 slots of 2 columns
 
 
-def test_glyphs_land_on_their_half_rows():
+def test_wick_tips_are_half_row_exact_and_bodies_are_solid_whole_rows():
     lines = small_chart()
     assert half_row(109, 109, 100, ROWS) == 0 and half_row(100, 109, 100, ROWS) == 2 * ROWS - 1
-    # wick+wick, wick+body (body starts mid-row), body+body, body+wick, wick+empty (low mid-row)
-    assert column(lines, 0, range(ROWS)) == "│▄█▀╵"
-    # doji: a one-half-row body on k4, then wick to the bottom half-row
-    assert column(lines, 2, range(ROWS)) == "  ▀││"
-    assert all(cells(lines[r])[0][1] == GREEN for r in range(ROWS))
+    # A: high k0 (full wick row), body k3-k6 -> every row it touches (1-3), low k8 (top half of the last row)
+    assert column(lines, 0, range(ROWS)) == "│BBB╵"
+    # doji: body on k4 fills row 2, then wick down to k9
+    assert column(lines, 2, range(ROWS)) == "  B││"
+    assert cells(lines[0])[0][1] == GREEN and cells(lines[2])[0][1] == f"on {GREEN}"
+    # a high on k1 (bottom half of row 0) starts the wick mid-row, touching the body row below
+    lines = small_chart((A._replace(h=108.0), DOJI._replace(h=109.0)))
+    assert column(lines, 0, range(2)) == "╷B"
+
+
+def test_wicks_always_touch_their_body():
+    plot_w = 100 - len(fmt_price(90_000.0)) - 3
+    for seed in range(20):
+        lines = render(walk(40, seed=seed), 60, 100, 30, 2)
+        for x in range(plot_w):
+            run = column(lines, x, range(30 - FIXED)).strip(" ")
+            # optional half-row tip, wick, solid body, wick, optional half-row tip: nothing in between
+            assert not run or re.fullmatch("╷?│*B+│*╵?", run), run
 
 
 def test_red_candle_and_its_volume_take_red():
     down = Candle(T0 + 60, 105.0, 105.0, 100.0, 102.0, 1.0)
     lines = small_chart((A, down))
-    assert cells(lines[2])[2] == ("█", RED)
+    assert cells(lines[2])[2] == (" ", f"on {RED}")
     assert cells(lines[ROWS + VOLUME_ROWS])[2][1] != cells(lines[ROWS + VOLUME_ROWS])[0][1]
 
 
@@ -112,7 +132,7 @@ def test_missing_candle_leaves_an_empty_slot():
     body = range(30 - FIXED)
     assert column(lines, 4, body).strip() == ""  # minute 2 is missing
     assert all(column(lines, x, body).strip() for x in (0, 2, 6))
-    assert lines[30 - 2].plain[4] == " " and lines[30 - 2].plain[6] == "█"  # volume too
+    assert not filled(lines[30 - 2])[4] and filled(lines[30 - 2])[6]  # volume too
 
 
 def test_time_labels_start_at_their_candles_column():
@@ -124,13 +144,13 @@ def test_time_labels_start_at_their_candles_column():
         x0 = plot_w - n * slot
         labels = [(i, w) for i, w in enumerate(lines[-1].plain) if w != " " and (i == 0 or lines[-1].plain[i - 1] == " ")]
         assert len(labels) >= 2
-        bars = lines[-2].plain
+        bars = filled(lines[-2])
         for x, _ in labels:
             text = lines[-1].plain[x:x + 5]
             t = datetime.strptime(f"2025-10-05 {text}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc).timestamp()
             s = n - 1 - int((candles[-1].t - t) // 60)
             assert x == x0 + s * slot + body // 2  # the candle's wick column
-            assert bars[x] == "█" and bars[x0 + s * slot:x0 + s * slot + body] == "█" * body
+            assert all(bars[x0 + s * slot:x0 + s * slot + body]) and bars[x]
 
 
 def test_slot_width_sets_the_visible_count():
@@ -138,14 +158,14 @@ def test_slot_width_sets_the_visible_count():
     label_w = len(fmt_price(max(c.h for c in candles)))
     for slot in (1, 2, 4):
         lines = render([c._replace(v=1.0) for c in candles], 60, 120, 30, slot)
-        assert lines[-2].plain.count("█") == (120 - label_w - 3) // slot * max(1, slot - 1)
+        assert sum(filled(lines[-2])) == (120 - label_w - 3) // slot * max(1, slot - 1)
 
 
 def test_doji_flat_and_single_candle_render():
     flat = Candle(T0, 5.0, 5.0, 5.0, 5.0, 0.0)  # hi == lo, no volume
     lines = render([flat], 60, 40, 20, 4)
     assert len(lines) == 20 and all(line.cell_len == 40 for line in lines)
-    assert sum(line.plain.count("▀") + line.plain.count("▄") for line in lines) == 3  # one half-row, 3 wide
+    assert sum(sum(filled(line)) for line in lines) == 3  # one body row, 3 wide
     assert any("5.0000" in line.plain for line in lines)
 
 

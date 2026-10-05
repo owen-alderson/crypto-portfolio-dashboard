@@ -306,8 +306,9 @@ async def test_zoom_redraws_without_fetching_and_f_gives_full_width(offline, mon
         await pilot.pause(0.3)
         chart, table = app.query_one(ChartPane), app.query_one(PriceTable)
 
-        def visible():  # candles in view = full-height volume bars on the bottom volume row
-            return str(chart.render()).split("\n")[-2].count("█") // max(1, chart.slot - 1)
+        def visible():  # candles in view = solid volume cells on the bottom volume row
+            row = chart.render().split("\n")[-2]
+            return sum(s.end - s.start for s in row.spans if str(s.style).startswith("on ")) // max(1, chart.slot - 1)
 
         counts = {}
         for key, slot in (("plus", 4), ("equals_sign", 4), ("minus", 2), ("minus", 1), ("minus", 1)):

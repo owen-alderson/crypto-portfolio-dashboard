@@ -1,4 +1,7 @@
-"""Candlestick chart as text: a pure function from candles to Rich lines, precise to half a row."""
+"""Candlestick chart as text: a pure function from candles to Rich lines.
+
+Wick tips are exact to half a row; bodies cover whole rows as solid background colour, so they never break
+(even where a terminal's font leaves gaps between rows) and wicks always meet them."""
 
 import math
 from datetime import datetime, timezone
@@ -17,9 +20,8 @@ MIN_PRICE_ROWS = 3
 MIN_TICKS = 4
 BLOCKS = " ▁▂▃▄▅▆▇█"
 DOTS = ("⠛", "⣤")  # a point filling the top / bottom half of a cell
-# (top half, bottom half) of a cell -> glyph; "b" body, "w" wick. Body wins a cell it shares with wick.
-GLYPHS = {("w", "w"): "│", ("w", ""): "╵", ("", "w"): "╷", ("b", "b"): "█", ("b", ""): "▀", ("", "b"): "▄",
-          ("b", "w"): "▀", ("w", "b"): "▄"}
+# wick cell -> glyph by which halves the wick fills: both, top only (low ends mid-row), bottom only (high starts mid-row)
+WICK = {(True, True): "│", (True, False): "╵", (False, True): "╷"}
 TIME_STEPS = (60, 300, 900, 1800, 3600, 7200, 14400, 21600, 43200, 86400, 172800, 604800, 1209600, 2592000)
 TOO_SMALL = "enlarge the terminal to see the chart"
 
@@ -151,14 +153,14 @@ def render(candles, granularity: int, width: int, height: int, slot: int, overla
     for s, _, c in shown:
         colour = GREEN if c.c >= c.o else RED
         kh, kl = y(c.h), y(c.l)
-        b0, b1 = sorted((y(c.o), y(c.c)))
+        b0, b1 = sorted((y(c.o) // 2, y(c.c) // 2))  # body rows: every row the open-close range touches
         left = x0 + s * slot
-        for r in range(min(kh, b0) // 2, max(kl, b1) // 2 + 1):
-            halves = tuple("b" if b0 <= k <= b1 else "w" if kh <= k <= kl else "" for k in (2 * r, 2 * r + 1))
-            wick, solid = GLYPHS.get(halves), GLYPHS.get(tuple(h if h == "b" else "" for h in halves))
-            for x in range(left, left + body):
-                if glyph := wick if x == left + mid else solid:
-                    put(top + r, x, glyph, colour)
+        for r in range(kh // 2, kl // 2 + 1):
+            if b0 <= r <= b1:
+                for x in range(left, left + body):
+                    put(top + r, x, " ", f"on {colour}")  # background fills the whole cell, gaps and all
+            else:
+                put(top + r, left + mid, WICK[(2 * r >= kh, 2 * r + 1 <= kl)], colour)
 
     # right axis: each grid label is the exact price of its line; the tag is the exact last price
     for r in tick_rows:
@@ -173,8 +175,9 @@ def render(candles, granularity: int, width: int, height: int, slot: int, overla
             level = min(8, eighths - 8 * j)
             if level <= 0:
                 break
-            for x in range(x0 + s * slot, x0 + s * slot + body):
-                put(vol_top + VOLUME_ROWS - 1 - j, x, BLOCKS[level], VOL_GREEN if c.c >= c.o else VOL_RED)
+            colour = VOL_GREEN if c.c >= c.o else VOL_RED
+            for x in range(x0 + s * slot, x0 + s * slot + body):  # full cells as background, like candle bodies
+                put(vol_top + VOLUME_ROWS - 1 - j, x, *((" ", f"on {colour}") if level == 8 else (BLOCKS[level], colour)))
     if vmax > 0 and len(fmt_price(vmax)) <= label_w:
         write(vol_top, axis, fmt_price(vmax).rjust(label_w), AXIS)
 

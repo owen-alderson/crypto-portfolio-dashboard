@@ -88,7 +88,7 @@ crypto_terminal/
   history.py     REST: candles, the product list for search, the live-candle update
   indicators.py  SMA, EMA, RSI, VWAP as pure functions
   alerts.py      alert rules, trigger check, desktop notification
-  chart.py       the chart as a pure function: candles in, text lines out, prices exact to half a row
+  chart.py       the chart as a pure function: candles in, text lines out; wick tips exact to half a row, solid whole-row bodies
   theme.py       the colour palette
   widgets.py     PriceTable (watchlist), ChartPane (draws chart.py's lines), PairPicker (search results)
   app.py         Textual app: layout, command parsing, saved config, status line
