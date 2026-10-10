@@ -172,11 +172,12 @@ class TerminalApp(App):
         ("minus", "zoom(-1)", "Zoom out"),
         ("f", "cycle_view", "Split / chart / watchlist"),
         ("b", "toggle_book", "Order book + trades"),
+        ("g", "group_book", "Group book prices"),
     ]
 
     def compose(self) -> ComposeResult:
         yield Static("CRYPTO TERMINAL · COINBASE SPOT · [1-6] or [ ] timeframe · [+ -] zoom · [f] view · "
-                     "[b] book · [/] command", id="title", markup=False)
+                     "[b] book [g] group · [/] command", id="title", markup=False)
         with Horizontal(id="main"):
             yield PriceTable(id="watchlist")
             with Vertical(id="chart-col"):
@@ -301,6 +302,9 @@ class TerminalApp(App):
 
     # ── order book + trades ──
 
+    def action_group_book(self):
+        self.query_one(DepthPane).cycle_group()
+
     def action_toggle_book(self):
         self.show_book = not self.show_book
         self.restart_book()
@@ -313,6 +317,8 @@ class TerminalApp(App):
         """One book connection, for the selected pair, only while the pane is visible."""
         pane = self.query_one(DepthPane)
         pane.display = self.book_wanted
+        if pane.symbol != self.selected:
+            pane.group = None  # each pair opens at its own default grouping
         pane.symbol, pane.feed = self.selected, None  # never show the previous pair's book, even for a moment
         if pane.display and self.selected in self.symbols:
             self.run_book(self.selected)

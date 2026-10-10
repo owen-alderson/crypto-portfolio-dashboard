@@ -392,31 +392,54 @@ async def test_book_pane_draws_levels_spread_depth_and_tape(offline):
         await pilot.pause(0.3)
         pane, feed = app.query_one(DepthPane), FakeBookFeed.instances[-1]
         assert pane.render().plain.splitlines()[1] == "loading book…"
-        feed.handle({"type": "snapshot", "product_id": "BTC-USD", "bids": [["100.00", "1.5"], ["99.50", "0.5"]],
-                     "asks": [["100.10", "0.5"], ["100.20", "1"], ["100.30", "0.00000001"]]})
-        for trade_id, side in ((7, "sell"), (9, "buy")):
-            feed.handle({"type": "match", "trade_id": trade_id, "side": side, "price": "100.10", "size": "0.25",
+        feed.handle({"type": "snapshot", "product_id": "BTC-USD", "bids": [["100.04", "1.5"], ["99.97", "0.5"]],
+                     "asks": [["100.11", "0.5"], ["100.12", "1"], ["100.19", "0.00000001"]]})
+        for trade_id, side, size in ((6, "sell", "0.25"), (7, "sell", "0.5"), (9, "buy", "0.25")):
+            feed.handle({"type": "match", "trade_id": trade_id, "side": side, "price": "100.11", "size": size,
                          "product_id": "BTC-USD", "time": "2026-10-09T23:13:41.322560Z"})
-        lines = pane.render()
-        plain = [line.plain for line in lines.split("\n")]
-        assert plain[0] == "BTC-USD order book"
+
+        def screen():
+            lines = pane.render().split("\n")
+            return lines, [line.plain for line in lines]
+
+        lines, plain = screen()
+        assert plain[0] == "BTC-USD book · by 0.01"  # ~$100 pair: 1 bp is one cent, so it opens ungrouped
         middle = plain.index(next(p for p in plain if "spread" in p))
         assert plain[middle - 3:middle + 3] == [
-            "        100.30       0.00000001",  # 1e-8 still shows: never rounded to 0
-            "        100.20       1.00000000",
-            "        100.10       0.50000000",  # best ask right above the spread
-            "───── spread 0.10 · 10 bp ─────",
-            "        100.00       1.50000000",
-            "         99.50       0.50000000"]
-        tape = plain[plain.index("trades") + 1:]
-        assert tape[:3] == ["23:13:41     100.10  0.25000000",  # newest first
-                            "·········· 1 missed ···········",  # trade 8 never arrived
-                            "23:13:41     100.10  0.25000000"]
-        rows = lines.split("\n")
-        assert RED in str(rows[plain.index("trades") + 1].spans[-1].style)  # 9: resting buy hit = a seller
-        deepest_bid = rows[middle + 2]  # 2.0 total on the bid side is the deepest: its bar spans the whole row
+            "          100.19        0.00000001",  # 1e-8 still shows: never rounded to 0
+            "          100.12        1.00000000",
+            "          100.11        0.50000000",  # best ask right above the spread
+            "─────── spread 0.07 · 7 bp ───────",
+            "          100.04        1.50000000",
+            "           99.97        0.50000000"]
+        deepest_bid = lines[middle + 2]  # 2.0 total on the bid side is the deepest: its bar spans the whole row
         assert any(s.start == 0 and s.end == pane.size.width and "on " in str(s.style) for s in deepest_bid.spans)
 
+        tape = plain[plain.index(next(p for p in plain if p.startswith("trades"))):]
+        assert tape[0] == "trades  last 1m: 75% buys"  # 0.75 of 1.0 bought (resting sells hit)
+        assert tape[2:5] == ["23:13:41     100.11  0.25000000   ",  # newest first: resting buy hit = a sale
+                             "············ 1 missed ············",  # trade 8 never arrived
+                             "23:13:41     100.11  0.75000000 ×2"]  # 6 and 7: same second, side and price
+        assert RED in str(lines[plain.index(tape[2])].spans[-1].style)
+
+        await pilot.press("g")  # group by 0.05: asks round up, bids round down, sizes add up
+        lines, plain = screen()
+        middle = plain.index(next(p for p in plain if "spread" in p))
+        assert plain[0] == "BTC-USD book · by 0.05"
+        assert plain[middle - 2:middle + 3] == [
+            "          100.20        0.00000001",
+            "          100.15        1.50000000",
+            "─────── spread 0.07 · 7 bp ───────",  # the real spread, not the grouped one
+            "          100.00        1.50000000",
+            "           99.95        0.50000000"]
+        for _ in range(3):
+            await pilot.press("g")  # 0.10, 0.50, then back to ungrouped
+        assert pane.render().plain.splitlines()[0] == "BTC-USD book · by 0.01"
+        await pilot.press("g", "down")
+        await pilot.pause(0.3)
+        assert pane.group is None  # the next pair opens at its own default
+
+        feed = FakeBookFeed.instances[-1]
         feed.last_msg = 0.0  # no frame for a long time: the book is hidden, not shown stale
         assert pane.render().plain.splitlines()[1].startswith("STALE: no data for")
         feed._status("reconnecting in 2s (boom)")

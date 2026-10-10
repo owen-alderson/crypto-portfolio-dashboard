@@ -6,7 +6,8 @@ import json
 import pytest
 from websockets.asyncio.server import serve
 
-from crypto_terminal.book import BookFeed, OrderBook, parse_trade
+from crypto_terminal.book import (BookFeed, OrderBook, Trade, big_threshold, default_step, flow, group_steps, parse_trade,
+                                  prints, step_decimals)
 from crypto_terminal.widgets import fmt_sizes
 
 SNAPSHOT = {"type": "snapshot", "product_id": "BTC-USD",
@@ -118,3 +119,47 @@ async def test_book_feed_rebuilds_from_a_fresh_snapshot_after_a_malformed_update
             task.cancel()
     assert any("malformed l2update change" in s for s in statuses)
     assert len(feed.book.bids) == 3  # the second connection's snapshot, not the big one
+
+
+def test_grouping_never_shows_a_better_price_than_exists():
+    book = OrderBook()
+    book.load({"type": "snapshot", "bids": [["82617.99", "1"], ["82617.00", "2"], ["82610.00", "0.5"], ["82609.99", "4"]],
+               "asks": [["82618.00", "1"], ["82620.00", "2"], ["82620.01", "3"], ["82700.00", "5"]]})
+    asks, bids = book.top(2, 1000)  # $10 buckets (1000 ticks of $0.01)
+    assert asks == [(82620.0, 3.0), (82630.0, 3.0)]  # 82,618.00 rounds up to 82,620; 82,620.01 up to 82,630
+    assert bids == [(82610.0, 3.5), (82600.0, 4.0)]  # 82,617.99 rounds down to 82,610
+    assert book.top(3, 1000)[0][2] == (82700.0, 5.0)  # sparse: the 3rd non-empty bucket is far out, still found
+    assert book.best() == (82617.99, 82618.0)
+
+
+def test_group_steps_and_defaults():
+    btc = group_steps(82_600, 2)
+    assert [s / 100 for s in btc] == [0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100]  # up to 0.5% of the price
+    assert default_step(btc, 82_600, 2) == 1000  # $10 ≈ 1 bp
+    xrp = group_steps(1.39, 4)
+    assert xrp == [1, 5, 10, 50] and default_step(xrp, 1.39, 4) == 1  # 1 bp is ~one tick: ungrouped
+    assert [step_decimals(s, 2) for s in (1, 5, 50, 1000)] == [2, 2, 1, 0]
+
+
+def trade(id, time="23:13:41", price=100.0, size=1.0, buy=True, missed=0, at=0.0):
+    return Trade(id, time, price, size, buy, 2, missed, at)
+
+
+def test_prints_combine_same_second_side_and_price_but_never_across_a_gap():
+    tape = [trade(9), trade(8), trade(7, missed=2), trade(4), trade(3, buy=False), trade(2, price=99.0),
+            trade(1, time="23:13:40")]
+    assert [(t.id, t.count, t.size, t.missed) for t in prints(tape)] == [
+        (9, 3, 3.0, 2),  # 9, 8, 7 combined; the gap before 7 stays under the line
+        (4, 1, 1.0, 0), (3, 1, 1.0, 0), (2, 1, 1.0, 0), (1, 1, 1.0, 0)]
+
+
+def test_flow_counts_only_the_last_minute():
+    tape = [trade(3, size=3, at=100), trade(2, size=1, buy=False, at=50), trade(1, size=9, at=30)]
+    assert flow(tape, now=100) == (3.0, 1.0)  # trade 1 is 70s old
+
+
+def test_big_threshold_is_the_largest_two_percent():
+    lines = [trade(i, size=1.0) for i in range(98)] + [trade(98, size=50), trade(99, size=60)]
+    cutoff = big_threshold(lines)
+    assert [t.id for t in lines if t.price * t.size > cutoff] == [98, 99]  # not the 98 identical small ones
+    assert big_threshold(lines[:10]) == float("inf")  # too few trades to judge

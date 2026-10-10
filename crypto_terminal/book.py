@@ -8,13 +8,16 @@ a book with a level silently missing would be wrong without looking wrong.
 import heapq
 import math
 import re
+import time
 from collections import deque
 from dataclasses import dataclass, replace
 from typing import Callable
 
 from .feed import Feed
 
-TAPE_LEN = 200
+TAPE_LEN = 5000  # enough for a busy minute of BTC-USD, which the buy/sell flow covers
+MAX_GROUP = 0.005  # coarsest price grouping offered: 0.5% of the price
+DEFAULT_GROUP_BP = 1  # a pair opens grouped at the step nearest 1 basis point of its price ($10 on BTC at ~$82k)
 TIME_RE = re.compile(r"\d{4}-\d\d-\d\dT(\d\d:\d\d:\d\d)")
 
 
@@ -38,6 +41,8 @@ class Trade:
     buy: bool  # the taker bought (lifted the ask)
     dp: int  # decimals Coinbase quoted the price with
     missed: int = 0  # trades missing just before this one (trade ids are sequential per pair)
+    at: float = 0.0  # monotonic time received
+    count: int = 1  # trades combined into this print (see `prints`)
 
 
 def parse_trade(msg: dict) -> Trade | None:
@@ -100,11 +105,101 @@ class OrderBook:
             else:
                 levels.pop(price, None)
 
-    def top(self, n: int) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
-        """Best `n` asks (lowest first) and best `n` bids (highest first) as (price, size)."""
-        asks = [(p, self.asks[p]) for p in heapq.nsmallest(n, self.asks)]
-        bids = [(p, self.bids[p]) for p in heapq.nlargest(n, self.bids)]
-        return asks, bids
+    def top(self, n: int, step: int = 1) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+        """Best `n` asks (lowest first) and best `n` bids (highest first) as (price, size), grouped into buckets of
+        `step` price ticks (a tick is 10**-dp)."""
+        if step == 1:
+            return ([(p, self.asks[p]) for p in heapq.nsmallest(n, self.asks)],
+                    [(p, self.bids[p]) for p in heapq.nlargest(n, self.bids)])
+        return grouped(self.asks, n, step, 10 ** self.dp, ask=True), grouped(self.bids, n, step, 10 ** self.dp, ask=False)
+
+    def best(self) -> tuple[float | None, float | None]:
+        return max(self.bids, default=None), min(self.asks, default=None)
+
+
+def grouped(levels: dict[float, float], n: int, step: int, scale: int, ask: bool) -> list[tuple[float, float]]:
+    """Best `n` non-empty buckets of `step` ticks. Asks round up and bids round down, so a grouped level never shows
+    a better price than is really on offer (a bid at 82,617.99 counts toward 82,610 when grouped by 10)."""
+    def bucket(price):
+        ticks = round(price * scale)  # whole ticks: no float drift at bucket edges
+        return -(-ticks // step) * step if ask else ticks // step * step
+
+    def group(items):
+        out = {}
+        for price, size in items:
+            key = bucket(price)
+            out[key] = out.get(key, 0.0) + size
+        return out
+
+    if not levels:
+        return []
+    # only levels that can land in the first n buckets: one pass of comparisons instead of grouping ~20k levels
+    first = bucket(min(levels) if ask else max(levels))
+    edge = (first + (n - 1) * step + 0.5) / scale if ask else (first - (n - 1) * step - 0.5) / scale
+    buckets = group((p, s) for p, s in levels.items() if (p <= edge if ask else p >= edge))
+    if len(buckets) < n:  # sparse book: some of those buckets are empty, so the best n reach further out
+        buckets = group(levels.items())
+    keys = heapq.nsmallest(n, buckets) if ask else heapq.nlargest(n, buckets)
+    return [(key / scale, buckets[key]) for key in keys]
+
+
+def group_steps(mid: float, dp: int) -> list[int]:
+    """Groupings offered, in ticks: 1, 5, 10, 50, 100… up to 0.5% of the price. BTC: $0.01 to $100."""
+    steps, e = [], 0
+    while True:
+        for k in (1, 5):
+            step = k * 10 ** e
+            if step > 1 and step / 10 ** dp > mid * MAX_GROUP:
+                return steps
+            steps.append(step)
+        e += 1
+
+
+def default_step(steps: list[int], mid: float, dp: int) -> int:
+    target = mid * DEFAULT_GROUP_BP / 1e4
+    return min(steps, key=lambda step: abs(math.log(step / 10 ** dp / target)))
+
+
+def step_decimals(step: int, dp: int) -> int:
+    """Decimals a grouped price needs: 2 for $0.05 steps, 0 for $10."""
+    zeros = len(str(step)) - len(str(step).rstrip("0"))
+    return max(0, dp - zeros)
+
+
+def prints(trades) -> list[Trade]:
+    """Combine consecutive trades with the same second, side and price into one line (count = how many).
+    Never across a gap, so a "missed" marker stays exactly where the gap was."""
+    out: list[Trade] = []
+    for trade in trades:  # newest first
+        last = out[-1] if out else None
+        if last and not last.missed and (last.time, last.buy, last.price) == (trade.time, trade.buy, trade.price):
+            out[-1] = replace(last, size=last.size + trade.size, count=last.count + trade.count,
+                              missed=trade.missed, dp=max(last.dp, trade.dp))
+        else:
+            out.append(trade)
+    return out
+
+
+def flow(trades, now: float, window: float = 60) -> tuple[float, float]:
+    """Base-currency volume bought and sold by takers over the last `window` seconds."""
+    bought = sold = 0.0
+    for trade in trades:  # newest first
+        if now - trade.at > window:
+            break
+        if trade.buy:
+            bought += trade.size
+        else:
+            sold += trade.size
+    return bought, sold
+
+
+def big_threshold(lines: list[Trade], quantile: float = 0.98, minimum: int = 50) -> float:
+    """Notional a print must exceed to count as big (bigger than 98% of recent prints). Strictly exceed: when most
+    prints are the same size, `>=` would light up nearly all of them. Infinite until there are enough to judge."""
+    if len(lines) < minimum:
+        return math.inf
+    values = sorted(t.price * t.size for t in lines)
+    return values[int(quantile * (len(values) - 1))]
 
 
 class BookFeed(Feed):
@@ -147,6 +242,5 @@ class BookFeed(Feed):
         last = self.trades[0].id if self.trades else None
         if last is not None and trade.id <= last:  # `last_match` repeats a trade after a reconnect
             return
-        if last is not None and trade.id > last + 1:
-            trade = replace(trade, missed=trade.id - last - 1)
-        self.trades.appendleft(trade)
+        missed = trade.id - last - 1 if last is not None else 0
+        self.trades.appendleft(replace(trade, missed=missed, at=time.monotonic()))

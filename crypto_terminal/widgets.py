@@ -1,6 +1,6 @@
 import time
 from collections import deque
-from itertools import accumulate
+from itertools import accumulate, islice
 
 from rich.text import Text
 from textual.screen import ModalScreen
@@ -10,7 +10,7 @@ from textual.widgets.option_list import Option
 
 from . import chart
 from .chart import fmt_price
-from .book import BookFeed
+from .book import BookFeed, big_threshold, default_step, flow, group_steps, prints, step_decimals
 from .feed import STALE_AFTER, Tick
 from .history import Candle, Product, apply_tick
 from .indicators import ema, sma, vwap
@@ -179,12 +179,33 @@ def fmt_sizes(sizes: list[float], width: int) -> list[str]:
 class DepthPane(Widget):
     """Order book (top) and trade tape (bottom) for the selected pair, drawn from a BookFeed."""
 
-    DEFAULT_CSS = "DepthPane { width: 32; height: 1fr; border-left: solid #ffb000; }"
+    DEFAULT_CSS = "DepthPane { width: 35; height: 1fr; border-left: solid #ffb000; }"
+    TAPE_SCAN = 500  # newest trades merged into prints for the tape and the big-print threshold
 
     def on_mount(self):
         self.symbol: str | None = None
         self.feed: BookFeed | None = None
+        self.group: int | None = None  # price grouping in ticks; None = the pair's default
         self.set_interval(REDRAW_EVERY, self.refresh)
+
+    def steps(self) -> tuple[list[int], int] | None:
+        """Groupings on offer for the current book and the one in use, or None before there's a book."""
+        if not (self.feed and self.feed.book.ready):
+            return None
+        book = self.feed.book
+        bid, ask = book.best()
+        mid = (bid + ask) / 2 if bid and ask else bid or ask
+        if not mid:
+            return None
+        steps = group_steps(mid, book.dp)
+        return steps, self.group if self.group in steps else default_step(steps, mid, book.dp)
+
+    def cycle_group(self):
+        """Next coarser grouping, wrapping back to ungrouped after the coarsest."""
+        if found := self.steps():
+            steps, step = found
+            self.group = steps[(steps.index(step) + 1) % len(steps)]
+            self.refresh()
 
     def render(self):
         width, height = self.size.width, self.size.height
@@ -193,8 +214,11 @@ class DepthPane(Widget):
         return Text("\n").join(lines[:height])
 
     def book_lines(self, width: int, rows: int) -> list[Text]:
-        lines = [Text(f"{self.symbol or '—'} order book", style=f"bold {AMBER}")]
-        feed = self.feed
+        found, feed = self.steps(), self.feed
+        title = f"{self.symbol or '—'} order book"
+        if found:
+            title = f"{self.symbol} book · by {found[1] / 10 ** feed.book.dp:,.{step_decimals(found[1], feed.book.dp)}f}"
+        lines = [Text(title, style=f"bold {AMBER}")]
         if feed is None:
             return lines + [Text("connecting…")]
         age = time.monotonic() - feed.last_msg
@@ -202,10 +226,11 @@ class DepthPane(Widget):
             return lines + [Text(feed.status)]  # status carries server text: Text, never markup
         if age > STALE_AFTER:
             return lines + [Text(f"STALE: no data for {age:.0f}s", style=RED)]
-        if not feed.book.ready:
+        if not found:
             return lines + [Text("loading book…")]
-        book, n = feed.book, max(1, (rows - 2) // 2)
-        asks, bids = book.top(n)
+        book, step, n = feed.book, found[1], max(1, (rows - 2) // 2)
+        asks, bids = book.top(n, step)
+        dp = step_decimals(step, book.dp)
         price_w = (width - 2) // 2
         size_w = width - price_w - 2
         sizes = fmt_sizes([s for _, s in asks + bids], size_w)
@@ -213,7 +238,7 @@ class DepthPane(Widget):
         deepest = max(cum_asks[-1:] + cum_bids[-1:], default=0)
 
         def level(price, size_text, cum, colour, bar_colour):
-            line = Text(f"{price:>{price_w},.{book.dp}f}", style=colour)
+            line = Text(f"{price:>{price_w},.{dp}f}", style=colour)
             line.append(f"  {size_text:>{size_w}}")
             bar = round(cum / deepest * width) if deepest else 0
             line.stylize(f"on {bar_colour}", width - bar, width)  # depth: cumulative size from the best price out
@@ -223,9 +248,10 @@ class DepthPane(Widget):
         bid_lines = [level(p, sz, c, GREEN, VOL_GREEN) for (p, _), sz, c in zip(bids, sizes[len(asks):], cum_bids)]
         # best ask sits just above the spread, best bid just below; short books pad away from the middle
         lines += [Text("")] * (n - len(asks)) + ask_lines[::-1]
-        if asks and bids:
-            spread, mid = asks[0][0] - bids[0][0], (asks[0][0] + bids[0][0]) / 2
-            bps = spread / mid * 1e4  # BTC's one-cent spread is ~0.0012 bp: 2 significant figures, never "0.0"
+        bid, ask = book.best()
+        if bid and ask:  # the real spread, whatever the grouping
+            spread = ask - bid
+            bps = spread / ((ask + bid) / 2) * 1e4  # BTC's one-cent spread is ~0.0012 bp: 2 significant figures
             gap = f" spread {spread:,.{book.dp}f} · {f'{bps:.2g}' if bps < 100 else f'{bps:.0f}'} bp "
         else:
             gap = " one-sided book "
@@ -233,17 +259,35 @@ class DepthPane(Widget):
         return lines + bid_lines + [Text("")] * (n - len(bids))
 
     def tape_lines(self, width: int, rows: int) -> list[Text]:
-        lines = [Text("trades", style=f"bold {AMBER}")]
-        trades = list(self.feed.trades)[:max(0, rows - 1)] if self.feed else []
-        if not trades:
-            return lines + [Text("waiting for trades…" if self.feed else "")]
-        dp = max(t.dp for t in trades)
-        price_w = (width - 10) // 2
-        size_w = width - 10 - price_w
-        for trade, size_text in zip(trades, fmt_sizes([t.size for t in trades], size_w)):
+        header = Text("trades", style=f"bold {AMBER}")
+        if not (self.feed and self.feed.trades):
+            return [header, Text("waiting for trades…" if self.feed else "")]
+        trades = list(islice(self.feed.trades, self.TAPE_SCAN))
+        bought, sold = flow(self.feed.trades, time.monotonic())
+        if bought + sold:
+            share = bought / (bought + sold)
+            header.append(f"  last 1m: {share:.0%} buys", style=AXIS)
+            green = round(share * width)
+            bar = Text("━" * green, style=GREEN) + Text("━" * (width - green), style=RED)
+        else:
+            header.append("  last 1m: no trades", style=AXIS)
+            bar = Text("━" * width, style=AXIS)
+        lines = [header, bar]
+
+        recent = prints(trades)
+        big = big_threshold(recent)
+        shown = recent[:max(0, rows - 2)]
+        dp = max(t.dp for t in shown)
+        price_w = (width - 13) // 2
+        size_w = width - 13 - price_w
+        for trade, size_text in zip(shown, fmt_sizes([t.size for t in shown], size_w)):
             colour = GREEN if trade.buy else RED
-            line = Text(trade.time, style=AXIS)
-            line.append(f" {trade.price:>{price_w},.{dp}f} {size_text:>{size_w}}", style=colour)
+            count = f"×{trade.count}" if trade.count > 1 else ""
+            body = f" {trade.price:>{price_w},.{dp}f} {size_text:>{size_w}}{count:>3}"
+            if trade.price * trade.size > big:  # bigger than 98% of recent prints
+                line = Text(trade.time + body, style=f"bold black on {colour}")
+            else:
+                line = Text(trade.time, style=AXIS) + Text(body, style=colour)
             lines.append(line)
             if trade.missed:  # newest first, so the missed (older) trades sit below
                 lines.append(Text(f"{f' {trade.missed} missed ':·^{width}}", style=AXIS))
